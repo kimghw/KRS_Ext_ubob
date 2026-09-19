@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>유밥 자동 학습 · 플레이어</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { display: flex; flex-direction: column; background: #15181c; color: #e8eaed;
+      font: 13px/1.4 system-ui, -apple-system, "Malgun Gothic", sans-serif; }
+    header { display: none; padding: 8px 12px; }
+    body.window header { display: block; }
+    .bar { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #8a9099; margin-right: 6px; vertical-align: middle; }
+    .dot.ok { background: #9bbc00; } .dot.warn { background: #f5a524; }
+    #state { font-weight: 700; }
+    #url { color: #9aa1ab; overflow-wrap: anywhere; }
+    #detail { width: 100%; color: #c9ced4; }
+    #warn { width: 100%; color: #f5a524; }
+    #warn:empty, #detail:empty { display: none; }
+    iframe { flex: 1; width: 100%; border: 0; background: #fff; }
+    body.offscreen iframe { flex: none; width: 1280px; height: 800px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <span><span class="dot" id="dot"></span><span id="state">준비 중</span></span>
+      <span id="url"></span>
+      <span id="detail"></span>
+      <span id="warn"></span>
+    </div>
+  </header>
+  <!-- 사이트를 그대로 실행하는 플레이어. 확장 페이지 안이라 소리 있는 자동재생이 허용된다. -->
+  <iframe id="runner" allow="autoplay; fullscreen"></iframe>
+  <script src="runner.js"></script>
+</body>
+</html>
