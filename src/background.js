@@ -192,11 +192,11 @@ async function fetchCourses() {
   const studying = items.filter((i) => /학습\s*중/.test(String(i.name || '')));
   const groups = (studying.length ? studying : items).filter((i) => Number(i.seriesCount) > 0);
   const byOrder = new Map();
-  for (const g of groups) {
-    const r = await apiJSON(`/api/myroom/$itemlist?itemId=${encodeURIComponent(g.id)}&${query}`);
-    if (!r || r.result === 'FAIL') continue;
+  const collect = async (g, q, keep) => {
+    const r = await apiJSON(`/api/myroom/$itemlist?itemId=${encodeURIComponent(g.id)}&${q}`);
+    if (!r || r.result === 'FAIL') return;
     for (const s of r.list || []) {
-      if (byOrder.has(s.id)) continue;
+      if (byOrder.has(s.id) || (keep && !keep(s))) continue;
       byOrder.set(s.id, {
         orderId: s.id,
         seriesId: s.seriesId,
@@ -206,15 +206,30 @@ async function fetchCourses() {
         passStatus: s.passStatus,
         studyProgress: Number(s.studyProgress) || 0,
         passProgress: s.passProgress,
+        startDate: s.startDate,
         endDate: s.endDate,
         cannotPlayMsg: s.cannotPlayMsg || ''
       });
     }
-  }
+  };
+  for (const g of groups) await collect(g, query);
+  // 학습기간이 아직 시작되지 않은 과정은 "학습중인 과정"에 없다 → "신청한 과정" 분류에서 찾아 '예정'으로 보여준다.
+  // 조회기간은 내 강의실 기본값(올해)과 같게 한다 — 오늘까지로 자르면 시작 전 과정이 빠질 수 있다.
+  try {
+    const yq = `date1=${now.getFullYear()}-01-01&date2=${now.getFullYear()}-12-31`;
+    const year = await apiJSON(`/api/myroom?${yq}`);
+    const applied = ((year && year.item && year.item.itemList) || [])
+      .filter((i) => i.hasList === 'Y' && Number(i.seriesCount) > 0 && /신청/.test(String(i.name || '')));
+    for (const g of applied) await collect(g, yq, (s) => s.passStatus !== 'Y' && isUpcoming(s));
+  } catch { /* 예정 과정을 못 가져와도 학습중인 과정 목록은 그대로 쓴다 */ }
   return [...byOrder.values()];
 }
 
-const classify = (c) => (c.orderStatus === 'OPEN' && c.passStatus !== 'Y' && Number(c.studyProgress) < 100 ? 'pending'
+// 학습기간 시작일이 오늘보다 뒤인 과정 (아직 학습할 수 없음)
+const isUpcoming = (c) => !!c.startDate && String(c.startDate).slice(0, 10) > ymd(new Date());
+
+const classify = (c) => (c.passStatus !== 'Y' && isUpcoming(c) ? 'upcoming'
+  : c.orderStatus === 'OPEN' && c.passStatus !== 'Y' && Number(c.studyProgress) < 100 ? 'pending'
   : c.passStatus === 'Y' ? 'passed'
   : c.orderStatus !== 'OPEN' ? 'closed'
   : 'complete');
@@ -229,12 +244,16 @@ function applyCourses(list, { fresh }) {
       return { ...c, status: keep ? old.status : classify(c) };
     });
     x.listedAt = Date.now();
+    const upcoming = x.courses.filter((c) => c.status === 'upcoming').length;
     return {
-      total: x.courses.length,
-      todo: x.courses.filter((c) => c.status === 'pending' || c.status === 'playing').length
+      total: x.courses.length - upcoming,
+      todo: x.courses.filter((c) => c.status === 'pending' || c.status === 'playing').length,
+      upcoming
     };
   });
 }
+
+const countText = ({ total, todo, upcoming }) => `학습중인 과정 ${total}개 · 학습할 과정 ${todo}개${upcoming ? ` · 예정 ${upcoming}개` : ''}`;
 
 async function testAccount() {
   try {
@@ -247,9 +266,9 @@ async function testAccount() {
 async function refreshList() {
   try {
     await ensureLoggedIn();
-    const { total, todo } = await applyCourses(await fetchCourses(), { fresh: false });
-    addLog(`목록 새로고침: 학습중인 과정 ${total}개 · 학습할 과정 ${todo}개`);
-    return { ok: true, total, todo };
+    const n = await applyCourses(await fetchCourses(), { fresh: false });
+    addLog(`목록 새로고침: ${countText(n)}`);
+    return { ok: true, ...n };
   } catch (e) {
     addLog(`목록 새로고침 실패: ${errMsg(e)}`);
     return { ok: false, error: errMsg(e) };
@@ -425,8 +444,7 @@ async function start() {
   try {
     await ensureLoggedIn();
     await mutate((r) => { r.message = '과정 목록 불러오는 중…'; });
-    const { total, todo } = await applyCourses(await fetchCourses(), { fresh: true });
-    addLog(`학습중인 과정 ${total}개 · 학습할 과정 ${todo}개`);
+    addLog(countText(await applyCourses(await fetchCourses(), { fresh: true })));
   } catch (e) {
     await stop(`시작하지 못했습니다: ${errMsg(e)}`, 'error');
     notify('시작하지 못했습니다', errMsg(e), true);
@@ -466,7 +484,8 @@ async function nextCourse() {
   if (!cur) {
     const r = await getRunner();
     const done = (r.courses || []).filter((c) => c.status === 'done').length;
-    await stop(done ? `모든 과정을 마쳤습니다 (${done}개 과정)` : '학습할 과정이 없습니다', 'done');
+    const upcoming = (r.courses || []).filter((c) => c.status === 'upcoming').length;
+    await stop(done ? `모든 과정을 마쳤습니다 (${done}개 과정)` : `학습할 과정이 없습니다${upcoming ? ` (예정 ${upcoming}개는 학습기간 시작 전)` : ''}`, 'done');
     notify('자동 학습 완료', done ? `${done}개 과정의 강의를 모두 재생했습니다. 시험·설문이 있으면 직접 진행해 주세요.` : '진행할 과정이 없습니다.');
     return;
   }
@@ -730,6 +749,276 @@ async function openSitePage(path) {
   }
 }
 
+// =====================================================================
+// 러닝플러스 (runningplus.net) — 저장한 계정으로 자동 로그인
+// =====================================================================
+// 유밥과 달리 API 가 없다. 로그인 페이지의 폼(#MemberForm)과 같은 요청을 보내고, 결과는 나의 학습실 페이지로 확인한다.
+const RP_HOME_PATH = '/Mystudy/MyStudyList.nm';
+const rpBase = (s) => String(s.rpBaseUrl || DEFAULTS.rpBaseUrl).trim().replace(/\/+$/, '');
+const setRpAuth = (auth) => chrome.storage.local.set({ rpAuth: { ...auth, checkedAt: Date.now() } });
+
+async function rpFetch(path, opts = {}) {
+  const base = rpBase(await getSettings());
+  try {
+    return await fetch(base + path, { credentials: 'include', ...opts });
+  } catch (e) {
+    throw new Error(`사이트(${base})에 연결하지 못했습니다: ${errMsg(e)}`);
+  }
+}
+
+// 로그인돼 있으면 { name, html }, 아니면 null (로그인이 안 돼 있으면 로그인 페이지로 보내는 스크립트만 온다)
+// html 은 나의 학습실 페이지 — 과정 목록도 여기서 읽는다.
+async function rpSession() {
+  const html = await (await rpFetch(RP_HOME_PATH)).text();
+  if (!/\/Member\/Proc\/Logout/i.test(html)) return null;
+  const m = /<b[^>]*>\s*([^<]+?)\s*<\/b>\s*님\s*환영/.exec(html);
+  return { name: m ? decodeEntities(m[1]) : null, html };
+}
+
+// 로그인 페이지와 같은 요청: POST /Member/Proc/Login.nm (mdID, mdPW)
+async function rpLogin() {
+  const { rpAccount } = await chrome.storage.local.get('rpAccount');
+  if (!rpAccount || !rpAccount.userName || !rpAccount.password) throw new Error('아이디와 비밀번호를 먼저 저장해 주세요.');
+  await rpFetch('/Member/Login.nm').catch(() => {});   // 사이트 기본 쿠키를 먼저 받는다
+  const body = new URLSearchParams({ reURL: '', mdID: rpAccount.userName, mdPW: rpAccount.password });
+  const html = await (await rpFetch('/Member/Proc/Login.nm', { method: 'POST', body })).text();
+  // 성공해도 안내 alert 가 오므로, 실패는 alert('이유') 뒤의 history.back() 으로 구분한다
+  if (/history\.back\(\)/.test(html)) {
+    const m = /alert\(\s*(['"])([\s\S]*?)\1\s*\)/.exec(html);
+    throw Object.assign(new Error(m ? m[2] : '로그인에 실패했습니다'), { rejected: true });
+  }
+  return rpAccount.userName;
+}
+
+async function rpEnsureLoggedIn({ force = false } = {}) {
+  try {
+    let me = force ? null : await rpSession();
+    if (!me) {
+      const user = await rpLogin();
+      me = await rpSession();
+      if (!me) throw new Error('로그인 응답은 성공했지만 로그인 상태가 유지되지 않습니다. Chrome 설정에서 쿠키 차단 여부를 확인해 주세요.');
+      addLog(`러닝플러스 로그인 성공: ${me.name || user}`);
+    }
+    await setRpAuth({ ok: true, name: me.name });
+    return me;
+  } catch (e) {
+    // rejected: 사이트가 계정을 거절함 — 같은 계정으로 자동 재시도하지 않는다 (반복 실패로 계정이 잠기지 않게)
+    await setRpAuth({ ok: false, message: errMsg(e), rejected: !!e.rejected });
+    addLog(`러닝플러스 로그인 실패: ${errMsg(e)}`);
+    throw e;
+  }
+}
+
+async function rpTestAccount() {
+  try {
+    await rpEnsureLoggedIn({ force: true });
+  } catch { /* rpAuth 에 기록됨 */ }
+  const { rpAuth } = await chrome.storage.local.get('rpAuth');
+  return rpAuth;
+}
+
+// 나의 학습실을 탭으로 연다 (이미 열려 있으면 그 탭으로 이동). 계정이 있으면 먼저 로그인해 둔다.
+async function rpOpen() {
+  const base = rpBase(await getSettings());
+  const { rpAccount, rpAuth } = await chrome.storage.local.get(['rpAccount', 'rpAuth']);
+  if (rpAccount && rpAccount.userName && rpAccount.password && !(rpAuth && rpAuth.rejected)) {
+    try { await rpEnsureLoggedIn(); } catch { /* 실패하면 사이트의 로그인 화면이 뜬다 */ }
+  }
+  const [existing] = await chrome.tabs.query({ url: `${base}${RP_HOME_PATH}*` });
+  if (existing) {
+    await chrome.tabs.update(existing.id, { active: true });
+    await chrome.windows.update(existing.windowId, { focused: true });
+    await chrome.tabs.reload(existing.id);   // 세션이 끊긴 뒤 남아 있던 화면일 수 있다
+  } else {
+    await chrome.tabs.create({ url: `${base}${RP_HOME_PATH}` });
+  }
+}
+
+// ---------- 수강중 과정 목록 ----------
+// 나의 학습실(MyStudyList)은 서버가 그려 주는 페이지라 API 가 없다. 과정 표의 머리글(NO · 과정명 · 진도율 · 총 수강시간 · 기간 · 강의실)로
+// 열을 찾으므로 열 순서가 바뀌어도 읽을 수 있다. 표가 하나도 안 잡히면 "구조 진단"으로 실제 구조를 받아 고친다.
+const RP_SECTIONS = [[/수강중|학습중|진행/, 'active', '수강중'], [/대기|예정/, 'waiting', '수강대기'], [/종료|복습|완료|수료/, 'ended', '종료']];
+const rpText = (html) => decodeEntities(String(html)
+  .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ')
+  .replace(/<br\s*\/?>|<\/(?:p|div|li|tr)>/gi, '\n')
+  .replace(/<[^>]+>/g, ' '))
+  .replace(/[ \t\r ]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
+const rpAttr = (attrs, name) => {
+  const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs || '');
+  return m ? decodeEntities(m[1] ?? m[2] ?? m[3]).trim() : '';
+};
+
+// <table> … </table> 조각들 (겹쳐 있으면 안쪽 표가 먼저)
+function rpTables(html) {
+  const out = [];
+  const stack = [];
+  for (const m of html.matchAll(/<\/?table\b[^>]*>/gi)) {
+    if (m[0][1] !== '/') stack.push(m.index);
+    else if (stack.length) { const start = stack.pop(); out.push({ start, html: html.slice(start, m.index + m[0].length) }); }
+  }
+  return out;
+}
+// 닫는 태그가 빠진 HTML 도 읽도록 여는 태그 위치로 자른다
+const rpSplit = (html, re) => {
+  const parts = [];
+  let prev = null;
+  for (const m of html.matchAll(re)) {
+    if (prev) parts.push({ ...prev, html: html.slice(prev.end, m.index) });
+    prev = { tag: m[1] ? m[1].toLowerCase() : '', attrs: m[2] || '', end: m.index + m[0].length };
+  }
+  if (prev) parts.push({ ...prev, html: html.slice(prev.end) });
+  return parts;
+};
+const rpRows = (table) => rpSplit(table, /<(tr)\b([^>]*)>/gi).map((r) => ({ ...r, html: r.html.replace(/<\/tr>[\s\S]*$/i, '') }));
+const rpCells = (row) => rpSplit(row, /<(t[dh])\b([^>]*)>/gi).map((c) => ({ ...c, html: c.html.replace(/<\/t[dh]>[\s\S]*$/i, ''), text: rpText(c.html) }));
+
+const RP_COLUMNS = [[/^(no|번호|순번)$/i, 'no'], [/과정명|과정/, 'title'], [/진도/, 'progress'], [/시간/, 'time'], [/기간/, 'period'], [/강의실|학습|바로가기/, 'room'], [/상태|수료/, 'state']];
+const rpColumn = (header) => { const h = header.replace(/\s+/g, ''); return (RP_COLUMNS.find(([re]) => re.test(h)) || [null, h])[1]; };
+
+// 표 앞에 있는 제목("수강중인 과정" 등)으로 어느 목록인지 정한다
+function rpSectionOf(html, start) {
+  const before = html.slice(Math.max(0, start - 3000), start).replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, '');
+  const titles = [...before.matchAll(/>([^<>]*과정[^<>]*)</g)].map((m) => rpText(m[1])).filter((t) => t && t.length <= 30);
+  const label = titles.reverse().find((t) => RP_SECTIONS.some(([re]) => re.test(t))) || titles[0] || '';
+  const hit = RP_SECTIONS.find(([re]) => re.test(label));
+  return { key: hit ? hit[1] : 'other', label: label || '과정' };
+}
+
+// 강의실 칸의 버튼: 링크·onclick·csNo/sdNo 를 모두 남긴다 (사이트가 어느 방식으로 여는지에 따라 쓸 수 있게)
+function rpRoomOf(cellHtml, rowHtml) {
+  const tags = [...(cellHtml || '').matchAll(/<(a|button|input|span)\b([^>]*)>/gi)];
+  const btn = tags.find(([, , a]) => /href|onclick|csNo/i.test(a)) || tags[0];
+  const attrs = btn ? btn[2] : '';
+  const cs = /csNo\s*\/\s*(\d+)\s*\/\s*sdNo\s*\/\s*(\d+)/i.exec(rowHtml);
+  const href = rpAttr(attrs, 'href');
+  return {
+    label: rpText(cellHtml || '') || rpAttr(attrs, 'value') || rpAttr(attrs, 'title'),
+    href: href && !/^\s*(javascript:|#)/i.test(href) ? href : '',
+    onclick: rpAttr(attrs, 'onclick').slice(0, 200),
+    className: rpAttr(attrs, 'class'),
+    csNo: rpAttr(attrs, 'csNo') || (cs ? cs[1] : ''),
+    sdNo: rpAttr(attrs, 'sdNo') || (cs ? cs[2] : '')
+  };
+}
+
+function parseRpStudyList(html) {
+  const sections = [];
+  const courses = [];
+  const tables = [];
+  for (const t of rpTables(html)) {
+    if (/<table\b/i.test(t.html.slice(1))) continue;   // 표 안에 표가 든 것은 바깥 껍데기
+    const rows = rpRows(t.html).map((r) => ({ ...r, cells: rpCells(r.html) })).filter((r) => r.cells.length);
+    const hi = rows.findIndex((r) => r.cells.some((c) => /과정명|과정\s*명/.test(c.text)) && r.cells.length >= 2);
+    if (hi < 0) continue;
+    const headers = rows[hi].cells.map((c) => c.text);
+    const columns = headers.map(rpColumn);
+    const section = rpSectionOf(html, t.start);
+    const body = rows.slice(hi + 1);
+    const empty = body.length === 1 && body[0].cells.length === 1 ? body[0].cells[0].text : '';
+    let count = 0;
+    for (const r of body) {
+      if (r.cells.length < 2 || r.cells.every((c) => c.tag === 'th')) continue;
+      const by = {};
+      const extra = {};
+      r.cells.forEach((c, i) => {
+        const key = columns[i] || `col${i}`;
+        if (by[key] == null) by[key] = c;
+        if (!['no', 'title', 'progress', 'time', 'period', 'room'].includes(key)) extra[headers[i] || key] = c.text;
+      });
+      if (!by.title || !by.title.text) continue;
+      const pct = /(\d{1,3}(?:\.\d+)?)\s*%/.exec(by.progress ? by.progress.text : '');
+      const period = by.period ? by.period.text.replace(/\n/g, ' ') : '';
+      const dates = period.match(/\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}/g) || [];
+      const room = rpRoomOf(by.room ? by.room.html : '', r.html);
+      const cs = !room.csNo && /csNo\s*=\s*["']?(\d+)/i.exec(r.html);
+      const sd = !room.sdNo && /sdNo\s*=\s*["']?(\d+)/i.exec(r.html);
+      courses.push({
+        section: section.key,
+        sectionLabel: section.label,
+        no: by.no ? by.no.text : String(count + 1),
+        title: by.title.text.split('\n')[0].slice(0, 150),
+        titleNote: by.title.text.split('\n').slice(1).join(' · ').slice(0, 200),
+        progress: pct ? Number(pct[1]) : null,
+        time: by.time ? by.time.text.replace(/\n/g, ' ') : '',
+        period,
+        startDate: dates[0] || '',
+        endDate: dates[1] || dates[0] || '',
+        room: { ...room, csNo: room.csNo || (cs ? cs[1] : ''), sdNo: room.sdNo || (sd ? sd[1] : '') },
+        extra
+      });
+      count++;
+    }
+    sections.push({ ...section, headers, count, empty });
+    tables.push({ section: section.label, headers, rows: body.slice(0, 3).map((r) => r.cells.map((c) => c.text.replace(/\n/g, ' / '))), html: t.html });
+  }
+  return { sections, courses, tables };
+}
+
+// 로그인된 나의 학습실 HTML. 세션이 없으면 저장한 계정으로 로그인한다 (사이트가 계정을 거절한 뒤라면 자동 로그인하지 않는다).
+async function rpHome() {
+  const { rpAccount, rpAuth } = await chrome.storage.local.get(['rpAccount', 'rpAuth']);
+  const hasAccount = !!(rpAccount && rpAccount.userName && rpAccount.password);
+  if (hasAccount && !(rpAuth && rpAuth.rejected)) return rpEnsureLoggedIn();
+  const me = await rpSession();
+  if (me) return me;
+  const why = rpAuth && rpAuth.rejected
+    ? `사이트가 계정을 거절해 자동 로그인을 멈췄습니다 (${rpAuth.message}). 계정을 고치거나 로그인 확인을 눌러 주세요.`
+    : '러닝플러스에 로그인되어 있지 않습니다. 계정을 저장하거나 브라우저에서 로그인해 주세요.';
+  throw Object.assign(new Error(why), { code: 401 });
+}
+
+async function rpRefreshList() {
+  try {
+    const me = await rpHome();
+    const { sections, courses } = parseRpStudyList(me.html);
+    if (!sections.length) throw new Error('나의 학습실에서 과정 표를 찾지 못했습니다. "구조 진단"을 눌러 결과를 전달해 주세요.');
+    const active = courses.filter((c) => c.section === 'active').length;
+    await chrome.storage.local.set({ rpList: { sections: sections.map(({ key, label, count, empty }) => ({ key, label, count, empty })), courses, listedAt: Date.now() } });
+    addLog(`러닝플러스 목록 새로고침: 수강중 ${active}개${courses.length > active ? ` · 그 밖에 ${courses.length - active}개` : ''}`);
+    return { ok: true, total: courses.length, active };
+  } catch (e) {
+    addLog(`러닝플러스 목록 새로고침 실패: ${errMsg(e)}`);
+    return { ok: false, error: errMsg(e), needLogin: e.code === 401 || !!e.rejected };
+  }
+}
+
+// 목록이 이상할 때: 페이지가 실제로 어떻게 생겼는지 모아서 돌려준다 (팝업이 클립보드에 복사)
+async function rpDiagnose() {
+  const base = rpBase(await getSettings());
+  const lines = [`러닝플러스 구조 진단 ${new Date().toLocaleString('ko-KR')} · 확장 ${chrome.runtime.getManifest().version} · ${base}${RP_HOME_PATH}`];
+  let html;
+  try {
+    const me = await rpHome();
+    html = me.html;
+    lines.push(`로그인됨${me.name ? ` · ${me.name}` : ''} · 페이지 ${html.length}자`);
+  } catch (e) {
+    lines.push(`페이지를 받지 못했습니다: ${errMsg(e)}`);
+    return lines.join('\n');
+  }
+  const { sections, courses, tables } = parseRpStudyList(html);
+  lines.push(`과정 표 ${sections.length}개 · 과정 ${courses.length}개`);
+  for (const t of tables) {
+    lines.push(`[${t.section}] 머리글: ${t.headers.join(' | ')}`);
+    for (const r of t.rows) lines.push(`  ${r.join(' | ')}`);
+  }
+  for (const c of courses.slice(0, 10)) lines.push(`  ${c.sectionLabel} #${c.no} ${c.title} · ${c.progress ?? '-'}% · ${c.period} · 강의실: ${JSON.stringify(c.room)}`);
+  const clean = html.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, '');
+  const tabs = [...clean.matchAll(/<(a|button|li)\b([^>]*)>\s*(?:<[^>]+>\s*)*([^<]*(?:수강중|수강대기|종료)[^<]*과정[^<]*)</gi)]
+    .map((m) => `${rpText(m[3])}: ${m[2].replace(/\s+/g, ' ').trim().slice(0, 160)}`);
+  if (tabs.length) lines.push('목록 탭:', ...tabs.slice(0, 6).map((t) => `  ${t}`));
+  const options = [...clean.matchAll(/<option\b([^>]*\bsdNo\b[^>]*)>([\s\S]*?)<\/option>/gi)].map((m) => `  ${rpText(m[2])} ${m[1].replace(/\s+/g, ' ').trim().slice(0, 160)}`);
+  if (options.length) lines.push('학습과정 선택 상자:', ...options.slice(0, 10));
+  const titles = [...clean.matchAll(/>([^<>]*과정[^<>]*)</g)].map((m) => rpText(m[1])).filter((t) => t && t.length <= 40);
+  lines.push(`"과정"이 든 글: ${[...new Set(titles)].slice(0, 20).join(' | ')}`);
+  lines.push('--- 과정 표 HTML ---');
+  if (tables.length) for (const t of tables) lines.push(t.html.replace(/\s+/g, ' ').slice(0, 5000));
+  else {
+    const i = clean.search(/수강중인?\s*과정|과정명/);
+    lines.push(i >= 0 ? clean.slice(Math.max(0, i - 1500), i + 4000).replace(/\s+/g, ' ') : '(수강중인 과정·과정명 글자를 찾지 못했습니다)');
+  }
+  return lines.join('\n');
+}
+
 // 30초마다: 페이지가 안 열리거나, 플레이어가 사라졌거나, 오래 조용하면 다시 불러온다
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== WATCHDOG) return;
@@ -871,7 +1160,11 @@ const POPUP_ACTIONS = {
   'player-show': () => showPlayer(),
   'open-myroom': () => openSitePage('/MyPage/MyRoom'),
   'open-course': (msg) => openSitePage(`/Series/SeriesDetail/${encodeURIComponent(msg.seriesId)}`),
-  'diagnose': () => diagnose()
+  'diagnose': () => diagnose(),
+  'rp-account-test': () => rpTestAccount(),
+  'rp-open': () => rpOpen(),
+  'rp-list': () => rpRefreshList(),
+  'rp-diagnose': () => rpDiagnose()
 };
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

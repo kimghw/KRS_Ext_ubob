@@ -12,10 +12,20 @@ let editingAccount = false;
 let loginChecking = false;
 let listLoading = false;
 let listResult = null;   // { ok, text }
+let tab = 'main';        // 'main' 유밥 | 'plus' 러닝플러스
+let rpAccount = null;
+let rpAuth = null;
+let editingRpAccount = false;
+let rpLoginChecking = false;
+let rpList = null;          // { sections, courses, listedAt } — 나의 학습실 과정 표
+let rpListLoading = false;
+let rpListResult = null;    // { ok, text }
+let rpAutoTried = false;
+const RP_STALE_MS = 5 * 60 * 1000;   // 플러스 탭을 열 때 이보다 오래된 목록은 자동으로 새로고침
 
 const COURSE_STATUS = {
   pending: '대기', playing: '학습 중', done: '완료', passed: '수료', closed: '기간 종료',
-  complete: '진도 100%', skipped: '건너뜀', failed: '실패'
+  complete: '진도 100%', skipped: '건너뜀', failed: '실패', upcoming: '예정'
 };
 const PLAYABLE = new Set(['pending', 'playing', 'done', 'skipped', 'failed']);
 
@@ -37,7 +47,7 @@ const ago = (t) => {
 async function load() {
   const [s, l, ss] = await Promise.all([
     chrome.storage.sync.get(DEFAULTS),
-    chrome.storage.local.get({ runner: null, runnerLog: [], account: null, excluded: [], auth: null }),
+    chrome.storage.local.get({ runner: null, runnerLog: [], account: null, excluded: [], auth: null, rpAccount: null, rpAuth: null, rpList: null, popupTab: 'main' }),
     chrome.storage.session.get({ runnerStatus: null })
   ]);
   settings = s;
@@ -46,6 +56,10 @@ async function load() {
   account = l.account;
   excluded = l.excluded;
   auth = l.auth;
+  rpAccount = l.rpAccount;
+  rpAuth = l.rpAuth;
+  rpList = l.rpList;
+  tab = l.popupTab === 'plus' ? 'plus' : 'main';
   status = ss.runnerStatus;
   render();
 }
@@ -59,6 +73,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (changes.account) account = v('account');
     if (changes.excluded) excluded = v('excluded') || [];
     if (changes.auth) auth = v('auth');
+    if (changes.rpAccount) rpAccount = v('rpAccount');
+    if (changes.rpAuth) rpAuth = v('rpAuth');
+    if (changes.rpList) rpList = v('rpList');
   }
   if (area === 'session' && changes.runnerStatus) status = v('runnerStatus');
   render();
@@ -140,7 +157,10 @@ function renderRunner() {
 function renderCourses() {
   const list = (runner && runner.courses) || [];
   const todo = list.filter((c) => (c.status === 'pending' || c.status === 'playing') && !excluded.includes(c.orderId)).length;
-  $('coursesLabel').textContent = list.length ? `학습중인 과정 ${list.length}개 · 학습할 과정 ${todo}개` : '학습중인 과정';
+  const upcoming = list.filter((c) => c.status === 'upcoming').length;
+  $('coursesLabel').textContent = list.length
+    ? `학습중인 과정 ${list.length - upcoming}개 · 학습할 과정 ${todo}개${upcoming ? ` · 예정 ${upcoming}개` : ''}`
+    : '학습중인 과정';
   $('coursesEmpty').hidden = list.length > 0;
   $('btnList').disabled = listLoading;
   $('btnList').textContent = listLoading ? '불러오는 중…' : '목록 새로고침';
@@ -159,7 +179,7 @@ function renderCourses() {
     const playable = PLAYABLE.has(c.status);
     cb.checked = playable && !excluded.includes(c.orderId);
     cb.disabled = !playable;
-    cb.title = playable ? '자동 학습에 포함' : '학습할 필요가 없는 과정';
+    cb.title = playable ? '자동 학습에 포함' : c.status === 'upcoming' ? '학습기간이 아직 시작되지 않은 과정' : '학습할 필요가 없는 과정';
     cb.addEventListener('change', () => {
       const set = new Set(excluded);
       if (cb.checked) set.delete(c.orderId); else set.add(c.orderId);
@@ -170,7 +190,7 @@ function renderCourses() {
     title.type = 'button';
     title.className = 'title';
     title.textContent = c.title;
-    title.title = `${c.title}${c.group ? `\n분류: ${c.group}` : ''}${c.endDate ? `\n학습기간: ~${String(c.endDate).slice(0, 10)}` : ''}${c.note ? `\n${c.note}` : ''}\n(누르면 과정 페이지를 탭으로 엽니다)`;
+    title.title = `${c.title}${c.group ? `\n분류: ${c.group}` : ''}${c.endDate ? `\n학습기간: ${c.startDate ? `${String(c.startDate).slice(0, 10)} ` : ''}~ ${String(c.endDate).slice(0, 10)}` : ''}${c.note ? `\n${c.note}` : ''}\n(누르면 과정 페이지를 탭으로 엽니다)`;
     title.addEventListener('click', () => act('open-course', { seriesId: c.seriesId }));
 
     const pct = document.createElement('span');
@@ -180,6 +200,7 @@ function renderCourses() {
     const chip = document.createElement('span');
     chip.className = `chip ${c.status}`;
     chip.textContent = COURSE_STATUS[c.status] || c.status;
+    if (c.status === 'upcoming') chip.title = `${String(c.startDate).slice(0, 10)} 부터 학습할 수 있습니다`;
 
     li.append(cb, title, pct, chip);
     return li;
@@ -263,6 +284,227 @@ $('btnEditAccount').addEventListener('click', () => {
 
 $('btnTestLogin').addEventListener('click', testLogin);
 
+// ---------- 탭 ----------
+function renderTabs() {
+  for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+  $('tabMain').hidden = tab !== 'main';
+  $('tabPlus').hidden = tab !== 'plus';
+}
+
+for (const b of document.querySelectorAll('.tabs button')) {
+  b.addEventListener('click', () => {
+    tab = b.dataset.tab;
+    chrome.storage.local.set({ popupTab: tab });   // 다음에 열 때도 같은 탭
+    renderTabs();
+    if (tab === 'plus') rpAutoRefresh();
+  });
+}
+
+// ---------- 러닝플러스 계정 ----------
+function renderRpAccount() {
+  const has = !!(rpAccount && rpAccount.userName && rpAccount.password);
+  const showForm = !has || editingRpAccount;
+  $('rpAccountForm').hidden = !showForm;
+  $('rpAccountView').hidden = showForm;
+  $('rpBtnEditAccount').hidden = showForm;
+  if (has) {
+    const host = (() => { try { return new URL(settings.rpBaseUrl).host; } catch { return settings.rpBaseUrl; } })();
+    $('rpAccountSaved').textContent = `${host} · ${rpAccount.userName}`;
+    let text, cls;
+    if (rpLoginChecking) { text = '로그인 확인 중…'; cls = ''; }
+    else if (rpAuth && rpAuth.ok) { text = `로그인됨${rpAuth.name ? ` · ${rpAuth.name}` : ''} (${fmtClock(rpAuth.checkedAt)} 확인)`; cls = 'ok'; }
+    else if (rpAuth) { text = `로그인 실패: ${rpAuth.message}`; cls = 'warn'; }
+    else { text = '아직 로그인을 확인하지 않았습니다'; cls = ''; }
+    $('rpAuthText').textContent = text;
+    $('rpAuthDot').className = `dot ${cls}`;
+    $('rpBtnTestLogin').disabled = rpLoginChecking;
+  }
+  if (showForm && !$('rpBaseUrl').value) {
+    $('rpBaseUrl').value = settings.rpBaseUrl || DEFAULTS.rpBaseUrl;
+    $('rpUserName').value = (rpAccount && rpAccount.userName) || '';
+    $('rpPassword').placeholder = has ? '저장됨 (바꾸려면 입력)' : '';
+    $('rpPassword').required = !has;
+  }
+}
+
+async function rpTestLogin() {
+  rpLoginChecking = true;
+  render();
+  await act('rp-account-test');
+  rpLoginChecking = false;
+  const l = await chrome.storage.local.get({ rpAuth: null });
+  rpAuth = l.rpAuth;
+  render();
+}
+
+$('rpAccountForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = $('rpAccountError');
+  err.hidden = true;
+  let base;
+  try {
+    const u = new URL($('rpBaseUrl').value.trim());
+    if (u.protocol !== 'https:' || !/(^|\.)runningplus\.net$/.test(u.hostname)) throw new Error();
+    base = u.origin;
+  } catch {
+    err.textContent = 'https://○○○.runningplus.net 형식의 주소를 입력해 주세요.';
+    err.hidden = false;
+    return;
+  }
+  const userName = $('rpUserName').value.trim();
+  const password = $('rpPassword').value || (rpAccount && rpAccount.password) || '';
+  if (!userName || !password) {
+    err.textContent = '아이디와 비밀번호를 입력해 주세요.';
+    err.hidden = false;
+    return;
+  }
+  await chrome.storage.sync.set({ rpBaseUrl: base });
+  settings.rpBaseUrl = base;
+  rpAccount = { userName, password };
+  await chrome.storage.local.set({ rpAccount, rpAuth: null });
+  rpAuth = null;
+  $('rpPassword').value = '';
+  editingRpAccount = false;
+  rpTestLogin();   // 저장하면 바로 로그인을 확인한다
+});
+
+$('rpBtnEditAccount').addEventListener('click', () => {
+  editingRpAccount = true;
+  $('rpBaseUrl').value = '';
+  renderRpAccount();
+  $('rpUserName').focus();
+});
+
+$('rpBtnTestLogin').addEventListener('click', rpTestLogin);
+$('rpBtnOpen').addEventListener('click', async () => {
+  const btn = $('rpBtnOpen');
+  btn.disabled = true;
+  btn.textContent = '여는 중…';   // 로그인 확인 후 탭이 열리면 팝업은 닫힌다
+  await act('rp-open');
+  btn.disabled = false;
+  btn.textContent = '러닝플러스 열기';
+});
+
+// ---------- 러닝플러스 수강중 과정 ----------
+const RP_SECTION = { active: '수강중', waiting: '수강대기', ended: '종료', other: '그 밖에' };
+const shortDate = (d) => String(d || '').replace(/^\d{4}[.\-/]/, '').replace(/[\-/]/g, '.');
+
+function rpCourseItem(c) {
+  const li = document.createElement('li');
+  const title = document.createElement('button');
+  title.type = 'button';
+  title.className = 'title';
+  title.textContent = c.title;
+  title.title = [
+    c.title, c.titleNote,
+    c.period ? `기간: ${c.period}` : '',
+    c.time ? `총 수강시간: ${c.time}` : '',
+    c.progress != null ? `진도율: ${c.progress}%` : '',
+    ...Object.entries(c.extra || {}).map(([k, v]) => `${k}: ${v}`),
+    '(누르면 나의 학습실을 탭으로 엽니다)'
+  ].filter(Boolean).join('\n');
+  title.addEventListener('click', () => act('rp-open'));
+  li.append(title);
+  if (c.endDate) {
+    const when = document.createElement('span');
+    when.className = 'when';
+    when.textContent = `~${shortDate(c.endDate)}`;
+    when.title = `기간: ${c.period}`;
+    li.append(when);
+  }
+  const pct = document.createElement('span');
+  pct.className = 'pct';
+  pct.textContent = c.progress != null ? `${Math.round(c.progress)}%` : '';
+  li.append(pct);
+  return li;
+}
+
+function renderRpCourses() {
+  const all = (rpList && rpList.courses) || [];
+  const active = all.filter((c) => c.section === 'active');
+  const others = all.filter((c) => c.section !== 'active');
+  const activeSec = ((rpList && rpList.sections) || []).find((s) => s.key === 'active');
+  $('rpCoursesLabel').textContent = rpList ? `수강중 과정 ${active.length}개` : '수강중 과정';
+  $('rpBtnList').disabled = rpListLoading;
+  $('rpBtnList').textContent = rpListLoading ? '불러오는 중…' : '목록 새로고침';
+  const empty = $('rpCoursesEmpty');
+  empty.hidden = all.length > 0;
+  empty.textContent = !rpList ? '아직 불러온 목록이 없습니다.' : (activeSec && activeSec.empty) || '수강중인 과정이 없습니다.';
+  $('rpListedAt').hidden = !rpList;
+  if (rpList) $('rpListedAt').textContent = `${fmtClock(rpList.listedAt)} 나의 학습실에서 확인`;
+  $('rpListResult').hidden = !rpListResult;
+  if (rpListResult) {
+    $('rpListResult').textContent = rpListResult.text;
+    $('rpListResult').className = `msg${rpListResult.ok ? '' : ' warn'}`;
+  }
+
+  const items = active.map(rpCourseItem);
+  // 페이지에 수강대기·종료 표도 같이 있으면 아래에 구분해서 보여준다
+  const groups = new Map();
+  for (const c of others) groups.set(c.section, [...(groups.get(c.section) || []), c]);
+  for (const [key, list] of groups) {
+    const head = document.createElement('li');
+    head.className = 'group';
+    head.textContent = `${list[0].sectionLabel || RP_SECTION[key] || key} ${list.length}개`;
+    items.push(head, ...list.map(rpCourseItem));
+  }
+  $('rpCourses').replaceChildren(...items);
+}
+
+async function rpRefreshList({ quiet = false } = {}) {
+  if (rpListLoading) return;
+  rpListLoading = true;
+  rpListResult = null;
+  render();
+  const res = await act('rp-list');
+  rpListLoading = false;
+  const r = res && res.result;
+  if (res && res.ok && r && r.ok) {
+    rpListResult = quiet ? null : { ok: true, text: `수강중 과정 ${r.active}개를 불러왔습니다${r.total > r.active ? ` (그 밖에 ${r.total - r.active}개)` : ''}` };
+  } else {
+    rpListResult = { ok: false, text: `목록을 불러오지 못했습니다: ${(r && r.error) || (res && res.error) || '알 수 없는 오류'}` };
+  }
+  const l = await chrome.storage.local.get({ rpAuth: null, rpList: null });
+  rpAuth = l.rpAuth;
+  rpList = l.rpList;
+  render();
+}
+
+// 플러스 탭을 열면 목록이 없거나 오래됐을 때 한 번 자동으로 가져온다 (계정이 있고 거절되지 않았을 때만)
+function rpAutoRefresh() {
+  if (rpAutoTried || rpListLoading) return;
+  const has = !!(rpAccount && rpAccount.userName && rpAccount.password);
+  if (!has || (rpAuth && rpAuth.rejected)) return;
+  if (rpList && Date.now() - rpList.listedAt < RP_STALE_MS) return;
+  rpAutoTried = true;
+  rpRefreshList({ quiet: true });
+}
+
+$('rpBtnList').addEventListener('click', () => rpRefreshList());
+
+let rpDiagText = '';
+$('rpBtnDiag').addEventListener('click', async () => {
+  const btn = $('rpBtnDiag');
+  btn.disabled = true;
+  btn.textContent = '진단 중…';
+  const res = await act('rp-diagnose');
+  rpDiagText = res && res.ok ? res.result : `진단 실패: ${(res && res.error) || '알 수 없는 오류'}`;
+  $('rpDiag').textContent = rpDiagText;
+  $('rpDiag').hidden = false;
+  $('rpDiagRow').hidden = false;
+  btn.disabled = false;
+  btn.textContent = '다시 진단';
+});
+$('rpBtnDiagCopy').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(rpDiagText);
+    $('rpBtnDiagCopy').textContent = '복사됨';
+    setTimeout(() => { $('rpBtnDiagCopy').textContent = '진단 결과 복사'; }, 1500);
+  } catch {
+    $('rpDiag').focus();
+  }
+});
+
 // ---------- 설정 ----------
 const CHECKS = ['runnerMuted', 'notify', 'enabled'];
 for (const k of CHECKS) $(k).addEventListener('change', (e) => chrome.storage.sync.set({ [k]: e.target.checked }));
@@ -295,9 +537,12 @@ function renderLog() {
 }
 
 function render() {
+  renderTabs();
   renderRunner();
   renderCourses();
   renderAccount();
+  renderRpAccount();
+  renderRpCourses();
   renderSettings();
   renderLog();
 }
@@ -348,7 +593,7 @@ $('btnList').addEventListener('click', async () => {
   listLoading = false;
   const r = res && res.result;
   if (res && res.ok && r && r.ok) {
-    listResult = { ok: true, text: `수강 과정 ${r.total}개를 불러왔습니다 (학습할 과정 ${r.todo}개)` };
+    listResult = { ok: true, text: `수강 과정 ${r.total}개를 불러왔습니다 (학습할 과정 ${r.todo}개${r.upcoming ? ` · 예정 ${r.upcoming}개` : ''})` };
   } else {
     listResult = { ok: false, text: `목록을 불러오지 못했습니다: ${(r && r.error) || (res && res.error) || '알 수 없는 오류'}` };
   }
@@ -357,4 +602,4 @@ $('btnList').addEventListener('click', async () => {
   render();
 });
 
-load();
+load().then(() => { if (tab === 'plus') rpAutoRefresh(); });

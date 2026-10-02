@@ -4,6 +4,7 @@ var UBOB_AUTO = {
   TAG: 'ubob-auto',
   DEFAULTS: {
     baseUrl: 'https://krs.ubob.com', // 학습 사이트 주소 (회사별 서브도메인)
+    rpBaseUrl: 'https://krs.runningplus.net', // 러닝플러스 주소 (회사별 서브도메인)
     speed: 2,           // 목표 배속 (사이트가 허용하는 최대 배속을 넘지 않음)
     runnerMuted: true,  // 백그라운드 자동 학습 중 소리 끄기
     notify: true,       // 데스크톱 알림

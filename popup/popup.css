@@ -41,6 +41,11 @@ body {
 header { display: flex; align-items: center; gap: 8px; margin: 0 2px 10px; }
 header h1 { flex: 1; margin: 0; font-size: 15px; font-weight: 700; }
 
+/* 탭 (유밥 / 플러스) */
+.tabs { display: flex; gap: 4px; margin-bottom: 8px; padding: 3px; background: var(--card); border: 1px solid var(--line); border-radius: 9px; }
+.tabs button { flex: 1; padding: 5px 0; border: 0; background: none; color: var(--muted); }
+.tabs button[aria-selected="true"] { background: var(--accent); color: var(--on-accent); }
+
 .card {
   background: var(--card);
   border: 1px solid var(--line);
@@ -111,14 +116,17 @@ button:disabled { opacity: .5; cursor: default; }
 .chip.playing { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .chip.done, .chip.passed { color: var(--done); border-color: color-mix(in srgb, var(--done) 40%, transparent); }
 .chip.failed, .chip.skipped { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.courses .when { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.courses li.group { padding-top: 8px; font-size: 11px; font-weight: 600; color: var(--muted); }
 
 /* 계정 */
-#accountView { display: grid; gap: 8px; justify-items: start; }
+.account-view { display: grid; gap: 8px; justify-items: start; }
 .auth { display: flex; align-items: flex-start; gap: 8px; overflow-wrap: anywhere; }
 .auth .dot { margin-top: 5px; }
-#accountForm { display: grid; gap: 8px; }
-#accountForm label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
-#accountForm input {
+.account-view .controls { margin-top: 0; justify-self: stretch; }
+.account-form { display: grid; gap: 8px; }
+.account-form label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
+.account-form input {
   font: inherit; color: var(--text); background: var(--bg);
   border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
 }
