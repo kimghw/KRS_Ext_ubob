@@ -1,4 +1,4 @@
-const { DEFAULTS, SPEEDS } = UBOB_AUTO;
+const { DEFAULTS, SPEEDS, REST_SEC, inWorkHours, nextWorkStart, workRange, fmtWhen, fmtDur } = UBOB_AUTO;
 const $ = (id) => document.getElementById(id);
 
 let settings = { ...DEFAULTS };
@@ -93,7 +93,10 @@ function phaseView() {
   }
   if (r.phase === 'prepare') return [r.message || '준비 중…', 'ok'];
   if (r.phase === 'attention') return ['확인이 필요합니다', 'warn'];
+  if (r.phase === 'offhours') return ['근무 시간까지 대기 중', ''];
+  if (r.phase === 'rest') return ['휴식 중', ''];
   const st = status && status.state;
+  if (st === 'resting') return ['휴식 중', ''];
   if (st === 'playing') return ['재생 중', 'ok'];
   if (st === 'course-finished') return ['다음 과정으로 이동 중…', 'ok'];
   if (st === 'waiting-next' || st === 'next-countdown' || st === 'countdown') return ['다음 강의 준비 중…', 'ok'];
@@ -107,12 +110,18 @@ function renderRunner() {
   $('dot').className = `dot ${cls}`;
 
   const msg = $('message');
-  msg.hidden = !r.message || r.phase === 'prepare';
-  msg.textContent = r.message || '';
+  let text = r.message || '';
+  // 과정 사이 휴식: 남은 시간을 1초마다 다시 그린다
+  if (r.running && r.phase === 'rest' && r.restUntil) {
+    const left = Math.max(0, Math.ceil((r.restUntil - Date.now()) / 1000));
+    text = `다음 과정까지 ${fmtDur(left)} 더 쉽니다 (${fmtClock(r.restUntil)} 시작)`;
+  }
+  msg.hidden = !text || r.phase === 'prepare';
+  msg.textContent = text;
   msg.className = `msg${r.phase === 'attention' || r.phase === 'error' ? ' warn' : ''}`;
 
   const cur = (r.courses || []).find((c) => c.orderId === r.currentOrderId);
-  const playing = r.running && r.phase !== 'prepare' && cur;
+  const playing = r.running && (r.phase === 'course' || r.phase === 'attention') && cur;
   $('nowPlaying').hidden = !playing;
   if (playing) {
     $('courseTitle').textContent = cur.title;
@@ -122,9 +131,11 @@ function renderRunner() {
       $('lectureTitle').textContent = `${s.total ? `${s.index}/${s.total}강 · ` : ''}${s.title}`;
       const pct = s.isLecture && s.duration ? Math.min(100, (s.currentTime / s.duration) * 100) : 0;
       $('bar').style.width = `${pct}%`;
-      $('time').textContent = s.isLecture && s.duration
-        ? `${fmtTime(s.currentTime)} / ${fmtTime(s.duration)}${s.rate ? ` · ${fmtRate(s.rate)}x` : ''}`
-        : '';
+      $('time').textContent = s.state === 'resting'
+        ? `휴식 중 · ${fmtDur(s.countdown || 0)} 후 다음 강의`
+        : s.isLecture && s.duration
+          ? `${fmtTime(s.currentTime)} / ${fmtTime(s.duration)}${s.rate ? ` · ${fmtRate(s.rate)}x` : ''}`
+          : '';
       $('progress').textContent = s.progress != null ? `과정 진도 ${s.progress}%` : '';
       $('saves').textContent = `진도 저장 ${s.saveCount || 0}회${s.lastSaveAt ? ` · ${ago(s.lastSaveAt)}` : ''}`;
       $('lectureProgress').textContent = s.lectureProgress != null ? `이 강의 ${s.lectureProgress}%` : '';
@@ -149,8 +160,41 @@ function renderRunner() {
   $('btnOpenTab').hidden = !attention;
   $('btnRetry').hidden = !attention;
   $('btnSkip').hidden = !(attention && cur);
-  $('btnPlayer').hidden = !r.running || r.phase === 'prepare';
+  $('btnPlayer').hidden = !r.running || !(r.phase === 'course' || r.phase === 'attention');
   $('startHint').hidden = r.running;
+}
+
+// ---------- 상단 옵션: 근무 시간 · 휴식 ----------
+function renderTopOptions() {
+  const on = !!settings.workHoursOnly;
+  $('workRange').hidden = !on;
+  for (const k of ['workStart', 'workEnd']) {
+    const el = $(k);
+    const v = settings[k] || DEFAULTS[k];
+    if (document.activeElement !== el && el.value !== v) el.value = v;
+  }
+  const sub = $('workHoursSub');
+  if (!on) {
+    sub.textContent = '';
+    sub.className = 'sub';
+  } else if (inWorkHours(settings)) {
+    const [, b] = workRange(settings);
+    sub.textContent = `근무 중 · ${String(Math.floor(b / 60)).padStart(2, '0')}:${String(b % 60).padStart(2, '0')}까지`;
+    sub.className = 'sub on';
+  } else {
+    const next = nextWorkStart(settings);
+    sub.textContent = next ? `지금은 쉬는 시간 · ${fmtWhen(next)} 시작` : '근무 시간이 없습니다';
+    sub.className = 'sub off';
+  }
+  $('restLabel').textContent = `강의 사이 ${fmtDur(REST_SEC[0])}~${fmtDur(REST_SEC[1])} 무작위 휴식`;
+}
+
+for (const k of ['workStart', 'workEnd']) {
+  $(k).addEventListener('change', (e) => {
+    const v = e.target.value;
+    if (!/^\d{2}:\d{2}$/.test(v)) { e.target.value = settings[k] || DEFAULTS[k]; return; }
+    chrome.storage.sync.set({ [k]: v });
+  });
 }
 
 // ---------- 과정 목록 ----------
@@ -506,7 +550,7 @@ $('rpBtnDiagCopy').addEventListener('click', async () => {
 });
 
 // ---------- 설정 ----------
-const CHECKS = ['runnerMuted', 'notify', 'enabled'];
+const CHECKS = ['runnerMuted', 'notify', 'enabled', 'workHoursOnly', 'workWeekdaysOnly', 'restBetween'];
 for (const k of CHECKS) $(k).addEventListener('change', (e) => chrome.storage.sync.set({ [k]: e.target.checked }));
 
 function renderSettings() {
@@ -538,6 +582,7 @@ function renderLog() {
 
 function render() {
   renderTabs();
+  renderTopOptions();
   renderRunner();
   renderCourses();
   renderAccount();
@@ -603,3 +648,9 @@ $('btnList').addEventListener('click', async () => {
 });
 
 load().then(() => { if (tab === 'plus') rpAutoRefresh(); });
+
+// 휴식 남은 시간, 근무 시간 안내는 시계처럼 흘러가야 한다
+setInterval(() => {
+  if (runner && runner.running && runner.phase === 'rest') renderRunner();
+  if (settings.workHoursOnly) renderTopOptions();
+}, 1000);

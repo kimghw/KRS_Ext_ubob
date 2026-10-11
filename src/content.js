@@ -3,7 +3,7 @@
 //  - 러너 모드: 확장의 플레이어(offscreen 문서 또는 "플레이어 화면 보기" 창) 안의 iframe
 (() => {
   'use strict';
-  const { TAG, DEFAULTS, SERIES_RE, LOGIN_RE, ERROR_RE } = UBOB_AUTO;
+  const { TAG, DEFAULTS, REST_SEC, SERIES_RE, LOGIN_RE, ERROR_RE } = UBOB_AUTO;
   // 러너 프레임 = 확장 플레이어 페이지의 "직접" 자식 프레임.
   // 사이트 페이지 안에 다시 들어 있는 iframe(개인정보처리방침 등)은 조상에 확장 페이지가 있어도 러너가 아니다.
   const anc = location.ancestorOrigins;
@@ -72,7 +72,15 @@
     // 로그인 페이지로 왔으면 백그라운드가 직접 다시 로그인한 뒤 과정 페이지로 보낸다
     const kind = IS_LOGIN ? 'login' : IS_SERIES ? 'series' : IS_ERROR ? 'error' : 'other';
     const res = await send({ type: 'runner-page', kind, url: location.href });
-    if (res && res.cmd === 'play') toPageWhenReady({ type: 'settings', settings: res.settings });
+    if (!res || res.cmd !== 'play') return;
+    let current = res.settings;
+    toPageWhenReady({ type: 'settings', settings: current });
+    // 강의 사이 휴식 설정은 재생 중에 바꿔도 바로 반영한다 (끄면 쉬던 것을 멈추고 다음 강의로)
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'sync' || !('restBetween' in changes)) return;
+      current = { ...current, rest: changes.restBetween.newValue ? REST_SEC : null };
+      toPageWhenReady({ type: 'settings', settings: current });
+    });
   }
 
   // ---------------------------------------------------------------

@@ -132,6 +132,9 @@
   let playAttempts = 0;
   let mutedByUs = false;
   let pending = null;          // { el, plan, at, timer }
+  let restUntil = 0;           // 러너: 강의 사이 휴식이 끝나는 시각 (0 이면 쉬는 중이 아님)
+  let restTimer = null;
+  let restThenFn = null;
   let courseFinished = false;
   const loadedAt = Date.now();
   const recentLog = [];
@@ -281,16 +284,41 @@
     kick(1500);
   }
 
-  // 강의가 끝나면 사이트가 진도를 서버에 보내고(orderContents 갱신) 난 뒤 다음 미완료 강의를 고른다
+  // 강의가 끝나면 사이트가 진도를 서버에 보내고(orderContents 갱신) 난 뒤 다음 미완료 강의를 고른다.
+  // 휴식 설정이 켜져 있고 이어서 볼 강의가 남아 있으면 그 사이에 무작위로 쉰다 (남은 강의가 없으면 과정 종료 → 백그라운드가 과정 사이 휴식)
   let afterTimer = null;
   function afterLecture() {
     clearTimeout(afterTimer);
     const started = Date.now();
     const wait = () => {
       if (site.isSendingLog() === true && Date.now() - started < 15000) { afterTimer = setTimeout(wait, 500); return; }
-      afterTimer = setTimeout(smartStart, 1500);
+      afterTimer = setTimeout(() => {
+        if (settings.rest && !courseFinished && pickTarget()) restThen(smartStart);
+        else smartStart();
+      }, 1500);
     };
     wait();
+  }
+
+  const fmtDur = (sec) => { const m = Math.floor(sec / 60), s = sec % 60; return m ? (s ? `${m}분 ${s}초` : `${m}분`) : `${s}초`; };
+  function restThen(fn) {
+    const [lo, hi] = settings.rest;
+    const sec = Math.max(0, lo) + Math.floor(Math.random() * Math.max(1, hi - lo + 1));
+    restUntil = Date.now() + sec * 1000;
+    restThenFn = fn;
+    clearTimeout(restTimer);
+    restTimer = setTimeout(endRest, sec * 1000);   // 숨은 문서에서 타이머가 늦어져도 tick() 이 시각으로 확인한다
+    emit('info', `다음 강의까지 ${fmtDur(sec)} 쉽니다`);
+    kick(0);
+  }
+  function endRest() {
+    if (!restUntil) return;
+    clearTimeout(restTimer);
+    restUntil = 0;
+    const fn = restThenFn;
+    restThenFn = null;
+    log('휴식 끝');
+    if (fn) fn();
   }
 
   function finishCourse(reason) {
@@ -516,7 +544,7 @@
       return;
     }
     playingSince = 0;
-    if (userPaused || pending || dialogs().length || oathOpen() || (doneKey && doneKey === currentKey())) {
+    if (userPaused || pending || restUntil || dialogs().length || oathOpen() || (doneKey && doneKey === currentKey())) {
       notPlayingSince = 0;
       return;
     }
@@ -552,6 +580,8 @@
       if (key !== doneKey) seriesDone = false;
     }
 
+    if (restUntil && Date.now() >= restUntil) endRest();
+
     if (settings.enabled && !courseFinished) {
       if (p) {
         applySpeed(p);
@@ -559,7 +589,7 @@
       }
       if (oathOpen()) emit('attention', '서약 동의 창이 열려 있습니다. 직접 확인해 주세요.', `oath:${key}`);
 
-      const blocked = pending || dialogs().length || oathOpen();
+      const blocked = pending || restUntil || dialogs().length || oathOpen();
       if (p && v && !blocked && !seriesDone) {
         const contentMode = site.isContent() === true;
         const paused = p.paused();
@@ -597,6 +627,7 @@
   function computeState(p) {
     if (!settings.enabled) return 'off';
     if (courseFinished) return 'course-finished';
+    if (restUntil) return 'resting';
     if (pending) return pending.plan.kind === 'next' ? 'next-countdown' : 'countdown';
     if (seriesDone) return 'done';
     if (oathOpen() || attentionDialogOpen()) return 'attention';
@@ -641,8 +672,9 @@
       hasPlayer: !!p,
       readyState: v ? v.readyState : null,
       src: v && v.currentSrc ? v.currentSrc.replace(/\?.*$/, '').slice(-60) : null,
-      countdown: pending ? Math.max(0, Math.ceil((pending.at - Date.now()) / 1000)) : null,
-      countdownLabel: pending ? pending.plan.label : null,
+      countdown: pending ? Math.max(0, Math.ceil((pending.at - Date.now()) / 1000))
+        : restUntil ? Math.max(0, Math.ceil((restUntil - Date.now()) / 1000)) : null,
+      countdownLabel: pending ? pending.plan.label : restUntil ? '다음 강의 시작' : null,
       log: recentLog.slice()
     };
     post('status', { status: lastStatus });
@@ -781,6 +813,7 @@
     const wasEnabled = settings && settings.enabled;
     settings = m.settings;
     if (wasEnabled && !settings.enabled) cancelPending(false);
+    if (!settings.rest && restUntil) endRest();   // 쉬는 중에 휴식 설정을 끄면 바로 다음 강의로
     kick(0);
   };
   handlers.command = (m) => { if (settings) command(m.cmd); };

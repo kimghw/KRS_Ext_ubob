@@ -52,6 +52,9 @@ async function render() {
 
   if (!runner || !runner.running) {
     state = '자동 학습이 실행 중이 아닙니다';
+  } else if (runner.phase === 'rest' || runner.phase === 'offhours') {
+    state = runner.phase === 'rest' ? '휴식 중' : '근무 시간까지 대기 중';
+    detail = runner.message || '';
   } else if (!lastSet.url) {
     state = '열어야 할 주소를 기다리는 중';
   } else if (!loadedAt) {
@@ -67,14 +70,15 @@ async function render() {
   } else if (st) {
     const LABEL = {
       playing: '재생 중', loading: '강의 불러오는 중', idle: '대기 중', trailer: '예고편 재생 중', 'user-paused': '일시정지',
-      'waiting-next': '다음 강의 준비 중', 'next-countdown': '다음 강의 준비 중', countdown: '자동 진행 중',
+      'waiting-next': '다음 강의 준비 중', 'next-countdown': '다음 강의 준비 중', countdown: '자동 진행 중', resting: '다음 강의까지 휴식 중',
       done: '과정 마지막 강의 완료', 'course-finished': '과정 완료 → 다음 과정으로', attention: '확인 필요'
     };
     state = LABEL[st.state] || st.state;
     cls = st.state === 'attention' ? 'warn' : 'ok';
     const parts = [];
     if (st.title) parts.push(`${st.total ? `${st.index}/${st.total}강 ` : ''}${st.title}`);
-    if (st.isLecture && st.duration) parts.push(`${fmtTime(st.currentTime)} / ${fmtTime(st.duration)} · ${st.rate ? `${st.rate}x` : ''}`);
+    if (st.state === 'resting' && st.countdown != null) parts.push(`${fmtTime(st.countdown)} 후 다음 강의`);
+    else if (st.isLecture && st.duration) parts.push(`${fmtTime(st.currentTime)} / ${fmtTime(st.duration)} · ${st.rate ? `${st.rate}x` : ''}`);
     parts.push(`진도 저장 ${st.saveCount || 0}회${st.lastSaveAt ? ` (${ago(st.lastSaveAt)})` : ''}`);
     if (st.lectureProgress != null) parts.push(`이 강의 ${st.lectureProgress}%`);
     if (st.progress != null) parts.push(`과정 ${st.progress}%`);

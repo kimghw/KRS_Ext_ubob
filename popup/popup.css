@@ -41,6 +41,20 @@ body {
 header { display: flex; align-items: center; gap: 8px; margin: 0 2px 10px; }
 header h1 { flex: 1; margin: 0; font-size: 15px; font-weight: 700; }
 
+/* 상단 옵션: 근무 시간 · 휴식 */
+.topopts { padding: 6px 12px; display: grid; gap: 0; }
+.topopts > label, .topopts .work-range label { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
+.topopts input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); flex: none; }
+.topopts .sub { margin-left: auto; padding-left: 8px; font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.topopts .sub.on { color: var(--accent); font-weight: 600; }
+.topopts .sub.off { color: var(--warn); font-weight: 600; }
+.work-range { display: flex; align-items: center; gap: 6px; padding: 0 0 6px 23px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.work-range input[type="time"] {
+  font: inherit; font-size: 12px; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-variant-numeric: tabular-nums;
+}
+.work-range label { margin-left: auto; padding: 0; }
+
 /* 탭 (유밥 / 플러스) */
 .tabs { display: flex; gap: 4px; margin-bottom: 8px; padding: 3px; background: var(--card); border: 1px solid var(--line); border-radius: 9px; }
 .tabs button { flex: 1; padding: 5px 0; border: 0; background: none; color: var(--muted); }

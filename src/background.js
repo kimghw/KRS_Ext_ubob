@@ -1,9 +1,10 @@
 importScripts('shared.js');
 
-const { DEFAULTS, SERIES_RE } = UBOB_AUTO;
+const { DEFAULTS, SERIES_RE, REST_SEC, inWorkHours, nextWorkStart, fmtWhen, fmtDur } = UBOB_AUTO;
 const RUNNER_PAGE = 'src/runner.html';
 const FRAME_RULE_ID = 1;
 const WATCHDOG = 'ubob-watchdog';
+const REST_ALARM = 'ubob-rest';       // 과정 사이 휴식이 끝나는 시각에 한 번 울린다
 const STALL_MS = 3 * 60 * 1000;      // 플레이어가 이만큼 조용하면 다시 불러온다
 const PAGE_TIMEOUT_MS = 30 * 1000;   // 이동 후 이 시간 안에 페이지가 안 열리면 문제
 const LOG_MAX = 50;
@@ -27,6 +28,19 @@ async function resumeAfterReload() {
   if (!r.running) return;
   const cur = (r.courses || []).find((c) => c.orderId === r.currentOrderId);
   await chrome.storage.session.remove(['runnerStatus', 'navAt', 'pageAt', 'pageTimeouts', 'playerWindow']);
+  if (r.phase === 'rest') {   // 쉬는 중이었다면 남은 시간만큼 더 쉬고 다음 과정으로
+    chrome.alarms.create(WATCHDOG, { periodInMinutes: 0.5 });
+    if ((r.restUntil || 0) > Date.now()) chrome.alarms.create(REST_ALARM, { when: r.restUntil });
+    else await endRest();
+    updateRunnerBadge();
+    return;
+  }
+  if (r.phase === 'offhours') {   // 근무 시간이 되면 워치독이 이어서 진행한다
+    chrome.alarms.create(WATCHDOG, { periodInMinutes: 0.5 });
+    await checkWorkHours();
+    updateRunnerBadge();
+    return;
+  }
   if (r.phase === 'prepare' || !cur) {
     await mutate((x) => { x.running = false; });
     addLog('확장이 다시 로드되어 자동 학습을 처음부터 다시 시작합니다');
@@ -418,11 +432,19 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
   await chrome.storage.session.remove('playerWindow');
   const r = await getRunner();
   const { lastUrl } = await chrome.storage.session.get('lastUrl');
-  if (r.running && lastUrl) {
+  if (r.running && r.phase === 'course' && lastUrl) {   // 휴식·근무 시간 대기 중이면 비워 둔다
     addLog('플레이어 화면을 닫았습니다. 보이지 않는 곳에서 계속 재생합니다');
     navigate(lastUrl).catch(() => {});
   }
 });
+
+// 쉬는 동안 플레이어를 비운다 (강의가 계속 재생되지 않게). "플레이어 화면 보기" 창은 두고 내용만 비운다
+async function parkPlayer() {
+  const w = await getPlayerWindow();
+  if (w) await sendToHost('window', { cmd: 'navigate', url: 'about:blank' }).catch(() => {});
+  else await closeOffscreen();
+  await chrome.storage.session.remove(['runnerStatus', 'navAt', 'pageAt']);
+}
 
 // =====================================================================
 // 자동 학습 흐름: 로그인 → 목록 → 과정 1 → 과정 2 → … → 완료
@@ -430,8 +452,85 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
 const runnerSettings = (s) => ({
   enabled: true, runner: true, speed: s.speed, muted: s.runnerMuted,
   autoNext: true, autoStart: true, nextDelay: 1, overlay: false,
+  rest: s.restBetween ? REST_SEC : null,   // 강의 사이 휴식 범위(초) — 강의 페이지 엔진이 강의마다 무작위로 고른다
   stall: s.stall || null   // 테스트용: 멈춤 감지 시간(ms) 재정의
 });
+
+// ---------- 근무 시간에만 자동 학습 ----------
+// 시간 밖이면 플레이어를 비우고 'offhours' 로 기다린다. 워치독(30초)과 설정 변경이 checkWorkHours 로 다시 확인한다.
+async function enterOffHours(s) {
+  const at = nextWorkStart(s);
+  const text = at
+    ? `근무 시간이 아니라 쉽니다. ${fmtWhen(at)}에 이어서 진행합니다`
+    : '근무 시간이 아니라 쉽니다. 근무 시간 설정을 확인해 주세요';
+  const r = await getRunner();
+  if (r.phase === 'offhours') {   // 이미 쉬는 중: 설정이 바뀌어 시각만 달라졌으면 안내문만 고친다
+    if (r.message !== text) await mutate((x) => { x.message = text; x.resumeAt = at ? at.getTime() : 0; });
+    return;
+  }
+  await mutate((x) => { x.phase = 'offhours'; x.message = text; x.resumeAt = at ? at.getTime() : 0; });
+  await chrome.alarms.clear(REST_ALARM);
+  await parkPlayer();
+  addLog(text);
+  updateRunnerBadge();
+}
+
+async function resumeWork() {
+  const r = await getRunner();
+  const s = await getSettings();
+  const cur = (r.courses || []).find((c) => c.orderId === r.currentOrderId);
+  addLog('근무 시간이 되어 이어서 진행합니다');
+  if (!cur) { await nextCourse(); return; }
+  await mutate((x) => { x.phase = 'course'; x.message = ''; x.resumeAt = 0; });
+  await chrome.storage.session.remove(['runnerStatus', 'pageTimeouts']);
+  try {
+    await navigate(courseUrl(s, cur));
+  } catch (e) {
+    await stop(`플레이어를 열지 못했습니다: ${errMsg(e)}`, 'error');
+    notify('플레이어 오류', errMsg(e), true);
+  }
+  updateRunnerBadge();
+}
+
+// 실행 중이면 지금 시각과 설정에 맞게 쉬거나 이어서 진행한다
+async function checkWorkHours() {
+  const r = await getRunner();
+  if (!r.running) return;
+  const s = await getSettings();
+  const ok = inWorkHours(s);
+  if (r.phase === 'course' && !ok) await enterOffHours(s);
+  else if (r.phase === 'offhours') { if (ok) await resumeWork(); else await enterOffHours(s); }
+}
+
+// ---------- 과정 사이 휴식 ----------
+async function startRest() {
+  const [lo, hi] = REST_SEC;
+  const sec = lo + Math.floor(Math.random() * (hi - lo + 1));
+  const until = Date.now() + sec * 1000;
+  await mutate((x) => {
+    x.phase = 'rest';
+    x.currentOrderId = null;
+    x.restUntil = until;
+    x.message = `다음 과정까지 ${fmtDur(sec)} 쉽니다 (${fmtWhen(until)} 시작)`;
+  });
+  await parkPlayer();
+  chrome.alarms.create(REST_ALARM, { when: until });
+  addLog(`${fmtDur(sec)} 쉰 뒤 다음 과정을 시작합니다`);
+  updateRunnerBadge();
+}
+
+async function endRest() {
+  const r = await getRunner();
+  if (!r.running || r.phase !== 'rest') return;
+  await chrome.alarms.clear(REST_ALARM);
+  await mutate((x) => { x.restUntil = 0; });
+  await nextCourse();   // 근무 시간 밖이면 nextCourse 가 대기로 넘긴다
+}
+
+const hasPendingCourse = async () => {
+  const [{ excluded = [] }, r] = await Promise.all([chrome.storage.local.get('excluded'), getRunner()]);
+  return (r.courses || []).some((c) => c.status === 'pending' && !excluded.includes(c.orderId));
+};
 
 async function start() {
   if ((await getRunner()).running) return;
@@ -463,6 +562,7 @@ async function stop(message, phase = 'idle') {
   });
   await closePlayers();
   await chrome.alarms.clear(WATCHDOG);
+  await chrome.alarms.clear(REST_ALARM);
   await chrome.storage.session.remove('runnerStatus');
   if (message) addLog(message);
   updateRunnerBadge();
@@ -491,6 +591,11 @@ async function nextCourse() {
   }
   await chrome.storage.session.remove(['runnerStatus', 'pageTimeouts']);
   lastProgressKey = '';
+  if (!inWorkHours(s)) {   // 과정은 골라 두고(이어서 진행할 과정), 근무 시간이 되면 재생한다
+    addLog(`다음 과정: ${cur.title}`);
+    await enterOffHours(s);
+    return;
+  }
   addLog(`과정 시작: ${cur.title}`);
   try {
     await navigate(courseUrl(s, cur));
@@ -515,6 +620,11 @@ async function finishCurrent(status, note, progress) {
     const label = status === 'done' ? '과정 완료' : status === 'skipped' ? '과정 건너뜀' : '과정 실패';
     addLog(`${label}: ${cur.title}${pct}${note ? ` (${note})` : ''}`);
     if (status === 'done') notify('과정 완료', `${cur.title}${pct}`);
+  }
+  // 세션 사이 휴식: 다음 과정이 있을 때만. 사용자가 직접 건너뛴 경우는 바로 다음으로
+  if (cur && status !== 'skipped' && (await getSettings()).restBetween && await hasPendingCourse()) {
+    await startRest();
+    return;
   }
   await nextCourse();
 }
@@ -634,6 +744,8 @@ async function diagnose() {
   lines.push(`진단 ${new Date().toLocaleString('ko-KR')} · 확장 ${chrome.runtime.getManifest().version} · ${(navigator.userAgent.match(/Chrome\/[\d.]+/) || ['Chrome ?'])[0]}`);
   lines.push(`사이트 ${base} · 자동 학습 ${r.running ? '실행 중' : '멈춤'} · 단계 ${r.phase}${r.message ? ` · ${r.message}` : ''}`);
   lines.push(`현재 과정: ${cur ? `${cur.title} (${cur.seriesId})` : '없음'}`);
+  const work = s.workHoursOnly ? `${s.workStart}~${s.workEnd}${s.workWeekdaysOnly ? ' 평일' : ''} · 지금 ${inWorkHours(s) ? '근무 시간' : '시간 밖'}` : '없음';
+  lines.push(`근무 시간 제한: ${work} · 강의 사이 휴식: ${s.restBetween ? `${fmtDur(REST_SEC[0])}~${fmtDur(REST_SEC[1])}` : '없음'}`);
 
   try {
     lines.push(`로그인 세션: ${(await sessionOk()) ? '유효' : '없음(401)'}`);
@@ -1021,9 +1133,16 @@ async function rpDiagnose() {
 
 // 30초마다: 페이지가 안 열리거나, 플레이어가 사라졌거나, 오래 조용하면 다시 불러온다
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === REST_ALARM) { await endRest(); return; }
   if (alarm.name !== WATCHDOG) return;
   const r = await getRunner();
   if (!r.running) { chrome.alarms.clear(WATCHDOG); return; }
+  // 근무 시간 밖이면 쉬고, 시간이 되면 이어서 진행한다. 휴식 알람을 놓쳤으면 여기서 끝낸다
+  if (r.phase === 'course' || r.phase === 'offhours') {
+    await checkWorkHours();
+    if ((await getRunner()).phase !== 'course') return;
+  }
+  if (r.phase === 'rest') { if ((r.restUntil || 0) <= Date.now()) await endRest(); return; }
   if (r.phase !== 'course') return;
   const { navAt = 0, pageAt = 0, beatAt = 0, pageTimeouts = 0 } =
     await chrome.storage.session.get(['navAt', 'pageAt', 'beatAt', 'pageTimeouts']);
@@ -1065,6 +1184,7 @@ async function updateRunnerBadge(status) {
   let color = '#5d7a00';
   if (r.running) {
     if (r.phase === 'attention') { text = '!'; color = '#d97706'; }
+    else if (r.phase === 'offhours' || r.phase === 'rest' || (status && status.state === 'resting')) { text = 'zz'; color = '#6b7280'; }
     else if (status && status.state === 'playing') text = fmtRate(status.target || 1);
     else text = '...';
   } else if (r.phase === 'error') { text = '!'; color = '#d97706'; }
@@ -1137,6 +1257,7 @@ async function seriesTabs() {
 
 chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area !== 'sync') return;
+  if (['workHoursOnly', 'workStart', 'workEnd', 'workWeekdaysOnly'].some((k) => k in changes)) checkWorkHours();
   if ('muteTab' in changes || 'enabled' in changes) {
     const s = await getSettings();
     for (const t of await seriesTabs()) applyMute(t.id, s.enabled && s.muteTab);

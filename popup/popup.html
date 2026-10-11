@@ -11,6 +11,20 @@
     <h1>유밥 자동 학습</h1>
   </header>
 
+  <!-- 자동 학습 시간 · 휴식 (유밥 백그라운드 자동 학습에 적용) -->
+  <section class="card topopts">
+    <label title="켜 두면 아래 시간대 밖에서는 자동 학습을 쉬고, 시간이 되면 이어서 진행합니다. 시간 밖에서 시작을 누르면 로그인·목록만 준비하고 근무 시간에 재생을 시작합니다.">
+      <input type="checkbox" id="workHoursOnly"> 근무 시간대에만 자동 학습<span class="sub" id="workHoursSub"></span>
+    </label>
+    <div class="work-range" id="workRange" hidden>
+      <input type="time" id="workStart" step="60" title="근무 시작"><span>~</span><input type="time" id="workEnd" step="60" title="근무 끝">
+      <label title="토·일요일은 쉽니다"><input type="checkbox" id="workWeekdaysOnly"> 평일만</label>
+    </div>
+    <label title="강의(세션) 하나가 끝나면 다음 강의까지, 과정이 끝났으면 다음 과정까지 무작위로 쉽니다. 쉬는 동안은 아무것도 재생하지 않습니다. 쉬는 중에 끄면 바로 다음 강의로 넘어갑니다.">
+      <input type="checkbox" id="restBetween"> <span id="restLabel">강의 사이 1분~3분 무작위 휴식</span>
+    </label>
+  </section>
+
   <nav class="tabs" role="tablist">
     <button type="button" role="tab" id="tabBtnMain" data-tab="main">유밥</button>
     <button type="button" role="tab" id="tabBtnPlus" data-tab="plus">플러스</button>
