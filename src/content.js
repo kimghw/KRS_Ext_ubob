@@ -3,7 +3,7 @@
 //  - 러너 모드: 확장의 플레이어(offscreen 문서 또는 "플레이어 화면 보기" 창) 안의 iframe
 (() => {
   'use strict';
-  const { TAG, DEFAULTS, REST_SEC, SERIES_RE, LOGIN_RE, ERROR_RE } = UBOB_AUTO;
+  const { TAG, DEFAULTS, restRange, SERIES_RE, LOGIN_RE, ERROR_RE } = UBOB_AUTO;
   // 러너 프레임 = 확장 플레이어 페이지의 "직접" 자식 프레임.
   // 사이트 페이지 안에 다시 들어 있는 iframe(개인정보처리방침 등)은 조상에 확장 페이지가 있어도 러너가 아니다.
   const anc = location.ancestorOrigins;
@@ -75,10 +75,11 @@
     if (!res || res.cmd !== 'play') return;
     let current = res.settings;
     toPageWhenReady({ type: 'settings', settings: current });
-    // 강의 사이 휴식 설정은 재생 중에 바꿔도 바로 반영한다 (끄면 쉬던 것을 멈추고 다음 강의로)
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'sync' || !('restBetween' in changes)) return;
-      current = { ...current, rest: changes.restBetween.newValue ? REST_SEC : null };
+    // 강의 사이 휴식 설정(켜기/끄기·최대 시간)은 재생 중에 바꿔도 바로 반영한다 (끄면 쉬던 것을 멈추고 다음 강의로)
+    chrome.storage.onChanged.addListener(async (changes, area) => {
+      if (area !== 'sync' || !('restBetween' in changes || 'restMaxMin' in changes)) return;
+      const s = await chrome.storage.sync.get(DEFAULTS);
+      current = { ...current, rest: s.restBetween ? restRange(s) : null };
       toPageWhenReady({ type: 'settings', settings: current });
     });
   }

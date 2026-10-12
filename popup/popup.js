@@ -1,4 +1,4 @@
-const { DEFAULTS, SPEEDS, REST_SEC, inWorkHours, nextWorkStart, workRange, fmtWhen, fmtDur } = UBOB_AUTO;
+const { DEFAULTS, SPEEDS, REST_MAX_MIN_LIMIT, restRange, inWorkHours, nextWorkStart, workRange, fmtWhen, fmtDur } = UBOB_AUTO;
 const $ = (id) => document.getElementById(id);
 
 let settings = { ...DEFAULTS };
@@ -186,8 +186,17 @@ function renderTopOptions() {
     sub.textContent = next ? `지금은 쉬는 시간 · ${fmtWhen(next)} 시작` : '근무 시간이 없습니다';
     sub.className = 'sub off';
   }
-  $('restLabel').textContent = `강의 사이 ${fmtDur(REST_SEC[0])}~${fmtDur(REST_SEC[1])} 무작위 휴식`;
+  const restMax = $('restMax');
+  const maxMin = String(restRange(settings)[1] / 60);
+  if (document.activeElement !== restMax && restMax.value !== maxMin) restMax.value = maxMin;
+  restMax.disabled = !settings.restBetween;
 }
+
+$('restMax').addEventListener('change', (e) => {
+  const n = Math.round(Number(e.target.value));
+  if (!Number.isFinite(n) || n < 1 || n > REST_MAX_MIN_LIMIT) { e.target.value = String(restRange(settings)[1] / 60); return; }
+  chrome.storage.sync.set({ restMaxMin: n });
+});
 
 for (const k of ['workStart', 'workEnd']) {
   $(k).addEventListener('change', (e) => {

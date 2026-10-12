@@ -20,9 +20,12 @@
       <input type="time" id="workStart" step="60" title="근무 시작"><span>~</span><input type="time" id="workEnd" step="60" title="근무 끝">
       <label title="토·일요일은 쉽니다"><input type="checkbox" id="workWeekdaysOnly"> 평일만</label>
     </div>
-    <label title="강의(세션) 하나가 끝나면 다음 강의까지, 과정이 끝났으면 다음 과정까지 무작위로 쉽니다. 쉬는 동안은 아무것도 재생하지 않습니다. 쉬는 중에 끄면 바로 다음 강의로 넘어갑니다.">
-      <input type="checkbox" id="restBetween"> <span id="restLabel">강의 사이 1분~3분 무작위 휴식</span>
-    </label>
+    <div class="opt">
+      <label title="강의(세션) 하나가 끝나면 다음 강의까지, 과정이 끝났으면 다음 과정까지 1분과 오른쪽 최대 시간 사이에서 무작위로 쉽니다. 쉬는 동안은 아무것도 재생하지 않습니다. 쉬는 중에 끄면 바로 다음 강의로 넘어갑니다.">
+        <input type="checkbox" id="restBetween"> 강의 사이 무작위 휴식
+      </label>
+      <span class="sub range" title="휴식 최대 시간(분). 최소는 1분">1분 ~ <input type="number" id="restMax" min="1" max="120" step="1" inputmode="numeric"> 분</span>
+    </div>
   </section>
 
   <nav class="tabs" role="tablist">

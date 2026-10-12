@@ -14,7 +14,8 @@ var UBOB_AUTO = {
     workEnd: '18:00',
     workWeekdaysOnly: true,   // 토·일 제외
     // ---- 세션(강의) 사이 휴식 ----
-    restBetween: false,       // 강의가 끝나면 다음 강의(또는 다음 과정)까지 REST_SEC 범위에서 무작위로 쉰다
+    restBetween: false,       // 강의가 끝나면 다음 강의(또는 다음 과정)까지 1분 ~ restMaxMin분 사이에서 무작위로 쉰다
+    restMaxMin: 3,            // 휴식 최대(분). 최소는 REST_MIN_SEC 로 고정
     // ---- 강의 페이지를 탭에서 직접 볼 때 ----
     enabled: true,      // 탭에서도 배속·다음 강의 자동 진행
     autoNext: true,
@@ -24,7 +25,15 @@ var UBOB_AUTO = {
     overlay: true,
     stall: null         // 멈춤 감지 시간(ms) 재정의 { frozen, notPlaying, noSave } — 기본은 page.js 상수
   },
-  REST_SEC: [60, 180],   // 세션 사이 휴식 범위(초): 1분 ~ 3분
+  REST_MIN_SEC: 60,      // 세션 사이 휴식 최소(초)
+  REST_MAX_MIN_LIMIT: 120,   // 팝업에서 입력할 수 있는 최대값(분)
+  // 휴식 범위(초) [최소, 최대]. 최대는 설정 restMaxMin(분), 최소보다 작으면 최소로
+  restRange(s) {
+    const lo = UBOB_AUTO.REST_MIN_SEC;
+    const n = Math.round(Number(s && s.restMaxMin));
+    const max = Number.isFinite(n) && n > 0 ? Math.min(n, UBOB_AUTO.REST_MAX_MIN_LIMIT) : UBOB_AUTO.DEFAULTS.restMaxMin;
+    return [lo, Math.max(lo, max * 60)];
+  },
   SPEEDS: [1, 1.25, 1.5, 1.75, 2],
   SERIES_RE: /\/series\/seriesdetail\//i,
   LOGIN_RE: /\/account\/login/i,

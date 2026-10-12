@@ -1,6 +1,6 @@
 importScripts('shared.js');
 
-const { DEFAULTS, SERIES_RE, REST_SEC, inWorkHours, nextWorkStart, fmtWhen, fmtDur } = UBOB_AUTO;
+const { DEFAULTS, SERIES_RE, restRange, inWorkHours, nextWorkStart, fmtWhen, fmtDur } = UBOB_AUTO;
 const RUNNER_PAGE = 'src/runner.html';
 const FRAME_RULE_ID = 1;
 const WATCHDOG = 'ubob-watchdog';
@@ -452,7 +452,7 @@ async function parkPlayer() {
 const runnerSettings = (s) => ({
   enabled: true, runner: true, speed: s.speed, muted: s.runnerMuted,
   autoNext: true, autoStart: true, nextDelay: 1, overlay: false,
-  rest: s.restBetween ? REST_SEC : null,   // 강의 사이 휴식 범위(초) — 강의 페이지 엔진이 강의마다 무작위로 고른다
+  rest: s.restBetween ? restRange(s) : null,   // 강의 사이 휴식 범위(초) — 강의 페이지 엔진이 강의마다 무작위로 고른다
   stall: s.stall || null   // 테스트용: 멈춤 감지 시간(ms) 재정의
 });
 
@@ -503,8 +503,8 @@ async function checkWorkHours() {
 }
 
 // ---------- 과정 사이 휴식 ----------
-async function startRest() {
-  const [lo, hi] = REST_SEC;
+async function startRest(s) {
+  const [lo, hi] = restRange(s);
   const sec = lo + Math.floor(Math.random() * (hi - lo + 1));
   const until = Date.now() + sec * 1000;
   await mutate((x) => {
@@ -622,8 +622,9 @@ async function finishCurrent(status, note, progress) {
     if (status === 'done') notify('과정 완료', `${cur.title}${pct}`);
   }
   // 세션 사이 휴식: 다음 과정이 있을 때만. 사용자가 직접 건너뛴 경우는 바로 다음으로
-  if (cur && status !== 'skipped' && (await getSettings()).restBetween && await hasPendingCourse()) {
-    await startRest();
+  const s = await getSettings();
+  if (cur && status !== 'skipped' && s.restBetween && await hasPendingCourse()) {
+    await startRest(s);
     return;
   }
   await nextCourse();
@@ -745,7 +746,7 @@ async function diagnose() {
   lines.push(`사이트 ${base} · 자동 학습 ${r.running ? '실행 중' : '멈춤'} · 단계 ${r.phase}${r.message ? ` · ${r.message}` : ''}`);
   lines.push(`현재 과정: ${cur ? `${cur.title} (${cur.seriesId})` : '없음'}`);
   const work = s.workHoursOnly ? `${s.workStart}~${s.workEnd}${s.workWeekdaysOnly ? ' 평일' : ''} · 지금 ${inWorkHours(s) ? '근무 시간' : '시간 밖'}` : '없음';
-  lines.push(`근무 시간 제한: ${work} · 강의 사이 휴식: ${s.restBetween ? `${fmtDur(REST_SEC[0])}~${fmtDur(REST_SEC[1])}` : '없음'}`);
+  lines.push(`근무 시간 제한: ${work} · 강의 사이 휴식: ${s.restBetween ? `${fmtDur(restRange(s)[0])}~${fmtDur(restRange(s)[1])}` : '없음'}`);
 
   try {
     lines.push(`로그인 세션: ${(await sessionOk()) ? '유효' : '없음(401)'}`);

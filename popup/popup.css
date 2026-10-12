@@ -43,7 +43,14 @@ header h1 { flex: 1; margin: 0; font-size: 15px; font-weight: 700; }
 
 /* 상단 옵션: 근무 시간 · 휴식 */
 .topopts { padding: 6px 12px; display: grid; gap: 0; }
-.topopts > label, .topopts .work-range label { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
+.topopts > label, .topopts .opt > label, .topopts .work-range label { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
+.topopts .opt { display: flex; align-items: center; gap: 8px; }
+.topopts .opt > label { flex: 1; min-width: 0; }
+.topopts .range { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.topopts .range input[type="number"] {
+  width: 46px; font: inherit; font-size: 12px; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 3px 4px; text-align: right; font-variant-numeric: tabular-nums;
+}
 .topopts input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); flex: none; }
 .topopts .sub { margin-left: auto; padding-left: 8px; font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 .topopts .sub.on { color: var(--accent); font-weight: 600; }
