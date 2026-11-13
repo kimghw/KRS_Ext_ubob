@@ -19,6 +19,8 @@
     #warn:empty, #detail:empty { display: none; }
     iframe { flex: 1; width: 100%; border: 0; background: #fff; }
     body.offscreen iframe { flex: none; width: 1280px; height: 800px; }
+    body.window #alpha-runner { display: none; }
+    body.offscreen #alpha-runner { position: absolute; left: 0; top: 0; }
   </style>
 </head>
 <body>
@@ -32,6 +34,8 @@
   </header>
   <!-- 사이트를 그대로 실행하는 플레이어. 확장 페이지 안이라 소리 있는 자동재생이 허용된다. -->
   <iframe id="runner" allow="autoplay; fullscreen"></iframe>
+  <iframe id="alpha-runner" allow="autoplay; fullscreen" src="about:blank" title="알파 학습"></iframe>
   <script src="runner.js"></script>
+  <script src="alpha-host-client.js"></script>
 </body>
 </html>

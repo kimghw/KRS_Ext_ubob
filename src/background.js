@@ -1,4 +1,226 @@
-importScripts('shared.js');
+importScripts('shared.js', 'alpha-catalog.js', 'alpha-api.js', 'alpha-auth.js', 'alpha-service.js',
+  'alpha-learning.js', 'alpha-certificate-api.js', 'alpha-certificates.js', 'alpha-certificate-list.js',
+  'alpha-certificate-batch.js', 'alpha-host.js', 'alpha-runner.js', 'alpha-survey-indicator.js', 'alpha-survey.js');
+
+const alphaSurveyIndicator = AlphaSurveyIndicator.create({ action: chrome.action, runtime: chrome.runtime });
+let surveyIconRefresh = 0;
+async function refreshAlphaSurveyIcon() {
+  const revision = ++surveyIconRefresh;
+  const { alphaRunner } = await chrome.storage.local.get('alphaRunner');
+  if (revision === surveyIconRefresh) await alphaSurveyIndicator.update(alphaRunner);
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.alphaRunner) refreshAlphaSurveyIcon().catch(() => {});
+});
+refreshAlphaSurveyIcon().catch(() => {});
+
+const alphaCsrfToken = async () => {
+  const cookie = await chrome.cookies.get({ url: AlphaCatalog.BASE_URL, name: 'XSRF-TOKEN' });
+  return cookie?.value || '';
+};
+const alphaApi = AlphaAPI.createClient({ getCsrfToken: alphaCsrfToken });
+const alphaAuth = AlphaAuth.create({ api: alphaApi, storage: chrome.storage.local, cookies: chrome.cookies });
+const alpha = AlphaService.create({
+  catalog: AlphaCatalog, api: alphaApi,
+  storage: chrome.storage.local,
+  tabs: chrome.tabs,
+  windows: chrome.windows,
+});
+const alphaLearning = AlphaLearning.createClient({ getCsrfToken: alphaCsrfToken });
+const alphaCertificates = AlphaCertificates.create({
+  catalog: AlphaCatalog, api: alphaApi, storage: chrome.storage.local,
+  downloads: chrome.downloads, runtimeId: chrome.runtime.id,
+  provider: AlphaCertificateAPI.createClient({ getCsrfToken: alphaCsrfToken,
+    tabs: chrome.tabs, scripting: chrome.scripting }),
+});
+chrome.downloads.onChanged.addListener(delta => { alphaCertificates.onChanged(delta).catch(() => {}); });
+alphaCertificates.reconcile().catch(() => {});
+const alphaCertificateBatch = AlphaCertificateBatch.create({ api: alphaApi, auth: alphaAuth,
+  list: AlphaCertificateList.createClient({ getCsrfToken: alphaCsrfToken, api: alphaApi }),
+  certificates: alphaCertificates, storage: chrome.storage.local });
+const sharedOffscreen = SharedOffscreen.create({ runtime: chrome.runtime, offscreen: chrome.offscreen,
+  storage: chrome.storage.session, hostPath: 'src/runner.html?host=offscreen' });
+const alphaHost = AlphaHost.create({ runtime: chrome.runtime, dnr: chrome.declarativeNetRequest, shared: sharedOffscreen });
+const alphaRunner = AlphaRunner.create({
+  catalog: AlphaCatalog, api: alphaApi, auth: alphaAuth, service: alpha,
+  learning: alphaLearning, certificates: alphaCertificates, host: alphaHost,
+  storage: chrome.storage.local, tabs: chrome.tabs, windows: chrome.windows, alarms: chrome.alarms,
+  notify: (title, message) => notify(title, message, true),
+  schedule: () => alphaSchedule(),
+  // 과정별 "자동 설문" 예약: 그 과정의 영상이 끝나면 실행이 설문을 제출한다.
+  survey: {
+    reserved: async (courseId) => (await alphaReservedSurveys()).includes(courseId),
+    auto: async (course) => {
+      const result = await alphaSurvey.auto(course);
+      if (result.submitted || result.completed) await reserveAlphaSurvey({ courseId: course.id, on: false });
+      return result;
+    },
+  },
+});
+async function alphaReservedSurveys() {
+  const { alphaSurveyReserved } = await chrome.storage.local.get('alphaSurveyReserved');
+  return Array.isArray(alphaSurveyReserved) ? alphaSurveyReserved : [];
+}
+async function reserveAlphaSurvey(msg) {
+  if (!AlphaCatalog.courses.some(item => item.id === msg?.courseId)) throw new Error('과정을 확인하지 못했습니다.');
+  const others = (await alphaReservedSurveys()).filter(id => id !== msg.courseId);
+  await chrome.storage.local.set({ alphaSurveyReserved: msg.on === true ? [...others, msg.courseId] : others });
+  return { ok: true, message: msg.on === true ? '영상이 끝나면 제출합니다.' : '예약을 취소했습니다.' };
+}
+// 사이드 패널 상단의 근무 시간·강의 사이 휴식 설정을 알파 재생에도 똑같이 적용한다.
+async function alphaSchedule() {
+  const s = await getSettings();
+  const at = nextWorkStart(s);
+  return { allowed: inWorkHours(s), resumeAt: at ? at.getTime() : 0, resumeLabel: at ? fmtWhen(at) : '',
+    rest: s.restBetween ? restRange(s) : null };
+}
+// 확장을 새로고침하면 숨겨진 플레이어가 사라진다. 재생 중이었다면 다음 감시 주기(30초)를 기다리지 않고
+// 바로 확인해 이어서 재생한다. 플레이어가 살아 있으면 아무 일도 하지 않는다.
+Promise.resolve().then(() => alphaRunner.tick()).catch(() => {});
+
+let alphaManualPending = false;
+let alphaLaunchPending = false;
+async function alphaManual(action) {
+  if (alphaManualPending || alphaLaunchPending) throw new Error('알파 요청을 처리 중입니다. 잠시 기다려 주세요.');
+  alphaManualPending = true;
+  try {
+    await alphaCertificateBatch.ready;
+    if (await alphaCertificateBatch.isBusy()) throw new Error('전체 수료증 받기가 진행 중입니다. 완료하거나 수료증 받기를 중지한 뒤 다시 시도하세요.');
+    const { alphaRunner: runner, alphaState } = await chrome.storage.local.get(['alphaRunner', 'alphaState']);
+    if (runner?.running) throw new Error('알파 자동 실행을 먼저 중지하세요.');
+    if (runner?.cleanupPending) throw new Error('숨겨진 알파 플레이어의 중지를 먼저 완료하세요.');
+    if (alphaState?.busy) throw new Error('알파 수강신청 처리가 끝난 뒤 다시 시도하세요.');
+    return await action();
+  } finally { alphaManualPending = false; }
+}
+async function alphaLaunch(action) {
+  if (alphaManualPending || alphaLaunchPending) throw new Error('알파 요청을 처리 중입니다. 잠시 기다려 주세요.');
+  alphaLaunchPending = true;
+  try {
+    await alphaCertificateBatch.ready;
+    if (await alphaCertificateBatch.isBusy()) throw new Error('전체 수료증 받기가 진행 중입니다. 완료하거나 수료증 받기를 중지한 뒤 다시 시도하세요.');
+    return await action();
+  } finally { alphaLaunchPending = false; }
+}
+
+async function retryAlphaCertificates(selection) {
+  const validation = AlphaCatalog.validateLearningSelection(selection.role, selection.courseIds);
+  if (!validation.ok) throw new Error(validation.errors.join('\n'));
+  const user = await alphaAuth.ensureLoggedIn();
+  let completed = 0, skipped = 0, attention = 0;
+  for (const course of validation.courses) {
+    const session = await alphaApi.session();
+    if (!session.authenticated || session.loginId !== user.loginId) throw new Error('알파 로그인 계정이 변경되었습니다. 다시 확인하세요.');
+    const result = await alphaLearning.inspect(course);
+    if (result.status !== 'completed') { skipped++; continue; }
+    const saved = await alphaCertificates.ensure({ course, registrationId: result.registrationId,
+      loginId: user.loginId, completed: true, retry: true });
+    if (saved.status === 'complete') completed++;
+    else if (saved.status !== 'downloading') attention++;
+  }
+  return { ok: true, message: `수료증 저장 확인이 끝났습니다. 저장 완료 ${completed}개${attention ? ` · 확인 필요 ${attention}개` : ''}${skipped ? ` · 미수료 ${skipped}개 제외` : ''}. 진행 중인 다운로드는 목록에서 확인하세요.` };
+}
+
+// ---------- 과정별 메뉴: 설문 바로가기 · 자동 설문 · 수료증 받기 ----------
+// 백그라운드 재생 중에도 쓸 수 있도록 실행 잠금과 따로 두되, 한 번에 하나씩만 처리한다.
+const alphaSurvey = AlphaSurvey.createClient({ getCsrfToken: alphaCsrfToken, learning: alphaLearning });
+let alphaCoursePending = false;
+async function alphaCourseAction(msg, action) {
+  const course = AlphaCatalog.courses.find(item => item.id === msg?.courseId);
+  if (!course) throw new Error('과정을 확인하지 못했습니다.');
+  if (alphaCoursePending) throw new Error('다른 과정 요청을 처리 중입니다. 잠시 기다려 주세요.');
+  alphaCoursePending = true;
+  try {
+    await alphaCertificateBatch.ready;
+    if (await alphaCertificateBatch.isBusy()) throw new Error('전체 수료증 받기가 끝난 뒤 다시 시도하세요.');
+    const user = await alphaAuth.ensureLoggedIn();
+    const result = await action(course, user);
+    // 조회와 제출 사이에 계정이 바뀌었다면 결과를 다른 계정의 것으로 보여 주지 않는다.
+    const session = await alphaApi.session();
+    if (!session.authenticated || session.loginId !== user.loginId) throw new Error('알파 로그인 계정이 변경되었습니다. 다시 확인하세요.');
+    return result;
+  } finally {
+    alphaCoursePending = false;
+    // 설문 제출·수료 여부가 바뀌었을 수 있으니 이 과정의 메뉴 상태를 바로 다시 확인한다.
+    refreshAlphaCourseStatus({ courseIds: [course.id], force: true }).catch(() => {});
+  }
+}
+// ---------- 과정별 수강 상태 (과정별 메뉴를 쓸 수 있는 과정만 활성화하기 위한 조회) ----------
+// enrolled: 신청만 하고 아직 보지 않음 · learning: 보기 시작했고 영상이 남음 · survey: 영상은 끝났고 설문만 남음
+// · completed: 수료 · 그 밖은 사이트 응답 그대로
+const alphaCourseStarted = result => (result.lessons || []).some(lesson => lesson.completed || lesson.progress > 0);
+const alphaCourseState = result => result.status === 'completed' ? 'completed'
+  : result.status === 'ready' ? (alphaCourseStarted(result) ? 'learning' : 'enrolled')
+    : result.status === 'attention' && result.attentionReason === 'survey' ? 'survey'
+      : result.status === 'attention' && result.attentionReason === 'assessment' ? 'exam'
+      : ['not-enrolled', 'waiting'].includes(result.status) ? result.status : 'attention';
+let alphaStatusJob = null;
+let alphaStatusAt = 0;
+function refreshAlphaCourseStatus(msg) {
+  // 화면을 열 때마다 묻지 않도록 20초 안의 재조회는 건너뛴다(메뉴 실행 직후에는 force로 바로 조회).
+  if (alphaStatusJob) return alphaStatusJob;
+  if (msg?.force !== true && Date.now() - alphaStatusAt < 20000) return Promise.resolve({ ok: true, cached: true });
+  alphaStatusJob = (async () => {
+    const session = await alphaApi.session();
+    if (!session.authenticated) return { ok: false, message: '알파 로그인이 필요합니다.' };
+    const saved = (await chrome.storage.local.get('alphaCourseStatus')).alphaCourseStatus;
+    const items = saved?.loginId === session.loginId ? { ...saved.items } : {};
+    for (const id of Array.isArray(msg?.courseIds) ? msg.courseIds.slice(0, 20) : []) {
+      const course = AlphaCatalog.courses.find(item => item.id === id);
+      if (!course) continue;
+      try { items[id] = alphaCourseState(await alphaLearning.inspect(course)); }
+      catch { delete items[id]; } // 확인하지 못한 과정은 메뉴를 열어 두지 않는다.
+    }
+    // 조회하는 사이 계정이 바뀌었다면 다른 계정의 상태로 저장하지 않는다.
+    const after = await alphaApi.session();
+    if (!after.authenticated || after.loginId !== session.loginId) return { ok: false, message: '알파 로그인 계정이 변경되었습니다.' };
+    await chrome.storage.local.set({ alphaCourseStatus: { loginId: session.loginId, items, updatedAt: Date.now() } });
+    alphaStatusAt = Date.now();
+    return { ok: true };
+  })().finally(() => { alphaStatusJob = null; });
+  return alphaStatusJob;
+}
+
+// 설문·시험 화면은 지금 보고 있는 탭 바로 옆(오른쪽)에 새 탭으로 연다.
+async function openBesideActiveTab(url) {
+  let place = {};
+  try {
+    const [current] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (current) place = { index: current.index + 1, windowId: current.windowId };
+  } catch { /* 위치를 알 수 없으면 맨 끝에 연다 */ }
+  return chrome.tabs.create({ url, active: true, ...place });
+}
+async function openAlphaSurvey(course) {
+  const { url } = await alphaSurvey.open(course);
+  await openBesideActiveTab(url);
+  return { ok: true, message: '설문 페이지를 열었습니다.' };
+}
+// 시험 바로가기: 시험은 자동으로 응시하지 않는다. 강의실을 시험 차시로 열어 사용자가 직접 응시하게 한다.
+async function openAlphaExam(course) {
+  const result = await alphaLearning.inspect(course);
+  if (result.status === 'completed') return { ok: false, message: '이미 수료한 과정입니다.' };
+  const lessons = result.lessons || [];
+  const exam = lessons.find(lesson => lesson.type === 10 && !lesson.completed);
+  if (!exam) return { ok: false, message: '응시할 시험이 없습니다.' };
+  if (lessons.some(lesson => lesson.playable && !lesson.completed)) return { ok: false, message: '영상 학습을 먼저 마치세요.' };
+  await openBesideActiveTab(exam.url);
+  return { ok: true, message: '시험 화면을 열었습니다.' };
+}
+async function saveAlphaCourseCertificate(course, user) {
+  const result = await alphaLearning.inspect(course);
+  if (result.status !== 'completed') return { ok: false, message: '아직 수료하지 않은 과정입니다.' };
+  let saved = await alphaCertificates.ensure({ course, registrationId: result.registrationId,
+    loginId: user.loginId, completed: true, retry: true });
+  // 다운로드가 끝날 때까지 잠깐 기다려 "받는 중"이 아니라 최종 결과를 알려 준다.
+  for (let i = 0; i < 10 && saved.status === 'downloading'; i++) {
+    await sleep(1000);
+    const { alphaCertificates: ledger } = await chrome.storage.local.get('alphaCertificates');
+    saved = (ledger?.items || []).find(item => item.loginId === user.loginId && item.registrationId === result.registrationId) || saved;
+  }
+  return { ok: saved.status === 'complete' || saved.status === 'downloading',
+    message: saved.status === 'complete' ? '수료증을 저장했습니다.' : saved.status === 'downloading' ? '수료증을 받는 중입니다.'
+      : saved.message || '수료증을 저장하지 못했습니다.' };
+}
 
 const { DEFAULTS, SERIES_RE, restRange, inWorkHours, nextWorkStart, fmtWhen, fmtDur } = UBOB_AUTO;
 const RUNNER_PAGE = 'src/runner.html';
@@ -15,6 +237,9 @@ const siteBase = (s) => String(s.baseUrl || DEFAULTS.baseUrl).trim().replace(/\/
 const courseUrl = (s, c) => `${siteBase(s)}/Series/SeriesDetail/${c.seriesId}`;
 const errMsg = (e) => (e && e.message) || String(e);
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// 툴바 아이콘을 누르면 팝업 대신 사이드 패널을 연다 (설정은 Chrome이 기억하지만 매번 다시 걸어 둔다)
+chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })?.catch(() => {});
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   const current = await chrome.storage.sync.get(null);
@@ -295,25 +520,15 @@ async function refreshList() {
 // 일반 탭이 아니라서 "숨겨진 탭" 제약(미디어 로딩 보류, 타이머 지연)을 받지 않고,
 // 확장 페이지라서 사용자 조작 없이도 소리 있는 자동재생이 허용된다.
 async function hasOffscreen() {
-  const ctx = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
-  return ctx.length > 0;
+  return sharedOffscreen.hasDocument();
 }
 
-let creating = null;
 async function ensureOffscreen() {
-  if (await hasOffscreen()) return;
-  if (!creating) {
-    creating = chrome.offscreen.createDocument({
-      url: `${RUNNER_PAGE}?host=offscreen`,
-      reasons: ['IFRAME_SCRIPTING'],
-      justification: '로그인된 학습 사이트를 보이지 않는 곳에서 열어 강의를 재생합니다.'
-    }).finally(() => { creating = null; });
-  }
-  await creating;
+  await sharedOffscreen.ensure('ubob');
 }
 
 async function closeOffscreen() {
-  if (await hasOffscreen()) await chrome.offscreen.closeDocument().catch(() => {});
+  await sharedOffscreen.release('ubob');
 }
 
 async function getPlayerWindow() {
@@ -356,7 +571,7 @@ async function ensureHost() {
 }
 
 async function hostAlive() {
-  return !!(await getPlayerWindow()) || await hasOffscreen();
+  return !!(await getPlayerWindow()) || ((await sharedOffscreen.owns('ubob')) && await hasOffscreen());
 }
 
 async function sendToHost(host, msg) {
@@ -389,6 +604,7 @@ async function onHostReady(host, sender) {
     await ensureFrameRule(sender.tab.id);
     await closeOffscreen();   // 창이 열리면 보이지 않는 플레이어는 멈춘다 (중복 재생 방지)
   }
+  if (host === 'offscreen' && (!(await sharedOffscreen.owns('ubob')) || await getPlayerWindow())) return { url: null };
   const r = await getRunner();
   const { lastUrl } = await chrome.storage.session.get('lastUrl');
   if (r.running && r.phase === 'course' && lastUrl) {
@@ -813,7 +1029,7 @@ async function onRunnerEvent(ev) {
   if (ev.kind === 'attention') {
     await mutate((x) => { x.phase = 'attention'; x.message = ev.text; });
     addLog(ev.text);
-    notify('확인이 필요합니다', `${ev.text}\n팝업에서 "플레이어 화면 보기" 또는 "탭에서 열기"로 처리한 뒤 "다시 시도"를 눌러 주세요.`, true);
+    notify('확인이 필요합니다', `${ev.text}\n사이드 패널에서 "플레이어 화면 보기" 또는 "탭에서 열기"로 처리한 뒤 "다시 시도"를 눌러 주세요.`, true);
     updateRunnerBadge();
   } else {
     addLog(ev.text);
@@ -1150,7 +1366,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   const now = Date.now();
   if (navAt > pageAt && now - navAt > PAGE_TIMEOUT_MS) {
     if (pageTimeouts >= 1) {
-      const text = '플레이어가 사이트 페이지를 열지 못합니다. 팝업의 "플레이어 화면 보기"로 무엇이 보이는지 확인해 주세요.';
+      const text = '플레이어가 사이트 페이지를 열지 못합니다. 사이드 패널의 "플레이어 화면 보기"로 무엇이 보이는지 확인해 주세요.';
       await mutate((x) => { x.phase = 'attention'; x.message = text; });
       addLog(text);
       notify('플레이어 문제', text, true);
@@ -1171,7 +1387,13 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // 브라우저를 다시 켜면 플레이어는 사라지므로 상태를 정리한다
 chrome.runtime.onStartup.addListener(async () => {
   const r = await getRunner();
-  if (r.running) await stop('브라우저가 다시 시작되어 자동 학습이 멈췄습니다. 팝업에서 다시 시작하세요.', 'idle');
+  if (r.running) await stop('브라우저가 다시 시작되어 자동 학습이 멈췄습니다. 사이드 패널에서 다시 시작하세요.', 'idle');
+  const { alphaRunner: activeAlpha } = await chrome.storage.local.get('alphaRunner');
+  if (activeAlpha?.running) await alphaRunner.stop();
+});
+
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === AlphaRunner.ALARM) alphaRunner.tick().catch(() => {});
 });
 
 // =====================================================================
@@ -1259,6 +1481,10 @@ async function seriesTabs() {
 chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area !== 'sync') return;
   if (['workHoursOnly', 'workStart', 'workEnd', 'workWeekdaysOnly'].some((k) => k in changes)) checkWorkHours();
+  // 알파도 근무 시간·휴식 설정이 바뀌면 다음 감시 주기를 기다리지 않고 바로 반영한다.
+  if (['workHoursOnly', 'workStart', 'workEnd', 'workWeekdaysOnly', 'restBetween', 'restMaxMin'].some((k) => k in changes)) {
+    alphaRunner.tick().catch(() => {});
+  }
   if ('muteTab' in changes || 'enabled' in changes) {
     const s = await getSettings();
     for (const t of await seriesTabs()) applyMute(t.id, s.enabled && s.muteTab);
@@ -1286,14 +1512,53 @@ const POPUP_ACTIONS = {
   'rp-account-test': () => rpTestAccount(),
   'rp-open': () => rpOpen(),
   'rp-list': () => rpRefreshList(),
-  'rp-diagnose': () => rpDiagnose()
+  'rp-diagnose': () => rpDiagnose(),
+  'alpha-check': (msg) => alphaManual(async () => { await alphaAuth.ensureLoggedIn(); return alpha.check(msg); }),
+  'alpha-enroll': (msg) => alphaManual(async () => { await alphaAuth.ensureLoggedIn(); return alpha.enroll(msg); }),
+  'alpha-open': (msg) => alpha.open(msg),
+  'alpha-start': (msg) => alphaLaunch(() => alphaRunner.start(msg)),
+  'alpha-start-enrolled': (msg) => alphaLaunch(() => alphaRunner.startEnrolled(msg)),
+  'alpha-stop': () => alphaRunner.stop(),
+  'alpha-retry': () => alphaLaunch(() => alphaRunner.retry()),
+  'alpha-continue-survey': (msg) => alphaLaunch(() => alphaRunner.continueSurvey(msg)),
+  'alpha-player-open': () => alphaRunner.openPlayer(),
+  'alpha-certificates-retry': (msg) => alphaManual(() => retryAlphaCertificates(msg)),
+  'alpha-survey-open': (msg) => alphaCourseAction(msg, openAlphaSurvey),
+  'alpha-survey-auto': (msg) => alphaCourseAction(msg, async (course) => {
+    const result = await alphaSurvey.auto(course);
+    // 설문이 처리됐으면 실행 상태에 반영한다(남은 설문 목록 정리, 설문을 기다리던 실행은 이어 감).
+    if (result.submitted || result.completed) {
+      await reserveAlphaSurvey({ courseId: course.id, on: false }).catch(() => {});
+      await alphaRunner.surveyDone(course.id).catch(() => {});
+    }
+    return result;
+  }),
+  'alpha-survey-reserve': (msg) => reserveAlphaSurvey(msg),
+  'alpha-course-certificate': (msg) => alphaCourseAction(msg, saveAlphaCourseCertificate),
+  'alpha-course-status': (msg) => refreshAlphaCourseStatus(msg),
+  'alpha-exam-open': (msg) => alphaCourseAction(msg, openAlphaExam),
+  'alpha-certificates-all': () => alphaManual(() => alphaCertificateBatch.start()),
+  'alpha-certificates-all-stop': () => alphaCertificateBatch.stop(),
+  'alpha-account-save': (msg) => alphaManual(() => alphaAuth.saveAccount(msg)),
+  'alpha-account-test': () => alphaManual(() => alphaAuth.testAccount())
 };
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.target === 'runner') return;
+  if (msg.target === 'runner' || msg.target === 'alpha-host') return;
+
+  if (['alpha-player-heartbeat', 'alpha-host-heartbeat'].includes(msg.type) && sender.id === chrome.runtime.id) {
+    alphaRunner.heartbeat(msg, sender).then(sendResponse, () => sendResponse({ active: false }));
+    return true;
+  }
 
   // 팝업
   if (POPUP_ACTIONS[msg.type]) {
+    // 알파 신청 명령은 확장 화면에서만 받는다. 학습 사이트 content script는 실행할 수 없다.
+    if (msg.type.startsWith('alpha-') && (sender.id !== chrome.runtime.id ||
+        !sender.url?.startsWith(chrome.runtime.getURL('popup/')))) {
+      sendResponse({ ok: false, error: '확장 프로그램의 알파 신청 화면에서 실행하세요.' });
+      return;
+    }
     POPUP_ACTIONS[msg.type](msg).then(
       (result) => sendResponse({ ok: true, result }),
       (e) => sendResponse({ ok: false, error: errMsg(e) })

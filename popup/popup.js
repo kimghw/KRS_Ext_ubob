@@ -12,7 +12,8 @@ let editingAccount = false;
 let loginChecking = false;
 let listLoading = false;
 let listResult = null;   // { ok, text }
-let tab = 'main';        // 'main' 유밥 | 'plus' 러닝플러스
+let tab = 'main';        // 'main' 유밥 | 'plus' 러닝플러스 | 'alpha' 알파 신청
+let tabChosen = false;
 let rpAccount = null;
 let rpAuth = null;
 let editingRpAccount = false;
@@ -59,7 +60,7 @@ async function load() {
   rpAccount = l.rpAccount;
   rpAuth = l.rpAuth;
   rpList = l.rpList;
-  tab = l.popupTab === 'plus' ? 'plus' : 'main';
+  if (!tabChosen) tab = ['plus', 'alpha'].includes(l.popupTab) ? l.popupTab : 'main';
   status = ss.runnerStatus;
   render();
 }
@@ -161,7 +162,6 @@ function renderRunner() {
   $('btnRetry').hidden = !attention;
   $('btnSkip').hidden = !(attention && cur);
   $('btnPlayer').hidden = !r.running || !(r.phase === 'course' || r.phase === 'attention');
-  $('startHint').hidden = r.running;
 }
 
 // ---------- 상단 옵션: 근무 시간 · 휴식 ----------
@@ -267,9 +267,12 @@ function renderAccount() {
   $('accountForm').hidden = !showForm;
   $('accountView').hidden = showForm;
   $('btnEditAccount').hidden = showForm;
+  $('btnTestLogin').hidden = showForm;
   if (has) {
+    // 계정 카드는 두 줄: 아이디와 로그인 상태를 한 줄에 쓰고, 사이트 주소는 툴팁으로 둔다.
     const host = (() => { try { return new URL(settings.baseUrl).host; } catch { return settings.baseUrl; } })();
-    $('accountSaved').textContent = `${host} · ${account.userName}`;
+    $('accountSaved').textContent = account.userName;
+    $('accountSaved').title = host;
     let text, cls;
     if (loginChecking) { text = '로그인 확인 중…'; cls = ''; }
     else if (auth && auth.ok) { text = `로그인됨${auth.name ? ` · ${auth.name}` : ''} (${fmtClock(auth.checkedAt)} 확인)`; cls = 'ok'; }
@@ -339,19 +342,40 @@ $('btnTestLogin').addEventListener('click', testLogin);
 
 // ---------- 탭 ----------
 function renderTabs() {
-  for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+  for (const b of document.querySelectorAll('.tabs button')) {
+    b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+    b.tabIndex = b.dataset.tab === tab ? 0 : -1;
+  }
   $('tabMain').hidden = tab !== 'main';
   $('tabPlus').hidden = tab !== 'plus';
+  $('tabAlpha').hidden = tab !== 'alpha';
+  // 근무 시간·휴식 카드는 유밥과 알파 재생에 함께 적용되며, 탭 줄이 움직이지 않도록 모든 탭에서 보인다.
+  $('logCard').hidden = tab !== 'main' || runnerLog.length === 0;
 }
 
 for (const b of document.querySelectorAll('.tabs button')) {
   b.addEventListener('click', () => {
+    tabChosen = true;
     tab = b.dataset.tab;
     chrome.storage.local.set({ popupTab: tab });   // 다음에 열 때도 같은 탭
     renderTabs();
     if (tab === 'plus') rpAutoRefresh();
   });
+  b.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const buttons = [...document.querySelectorAll('.tabs button')];
+    let index = buttons.indexOf(b);
+    if (event.key === 'Home') index = 0;
+    else if (event.key === 'End') index = buttons.length - 1;
+    else index = (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[index].focus();
+    buttons[index].click();
+  });
 }
+
+const isSidePanel = new URLSearchParams(location.search).get('surface') === 'sidepanel';
+document.body.classList.toggle('side-panel', isSidePanel);
 
 // ---------- 러닝플러스 계정 ----------
 function renderRpAccount() {
@@ -360,9 +384,12 @@ function renderRpAccount() {
   $('rpAccountForm').hidden = !showForm;
   $('rpAccountView').hidden = showForm;
   $('rpBtnEditAccount').hidden = showForm;
+  $('rpBtnTestLogin').hidden = showForm;
+  $('rpBtnOpen').hidden = showForm;
   if (has) {
     const host = (() => { try { return new URL(settings.rpBaseUrl).host; } catch { return settings.rpBaseUrl; } })();
-    $('rpAccountSaved').textContent = `${host} · ${rpAccount.userName}`;
+    $('rpAccountSaved').textContent = rpAccount.userName;
+    $('rpAccountSaved').title = host;
     let text, cls;
     if (rpLoginChecking) { text = '로그인 확인 중…'; cls = ''; }
     else if (rpAuth && rpAuth.ok) { text = `로그인됨${rpAuth.name ? ` · ${rpAuth.name}` : ''} (${fmtClock(rpAuth.checkedAt)} 확인)`; cls = 'ok'; }
@@ -577,7 +604,7 @@ function renderSettings() {
 
 // ---------- 기록 ----------
 function renderLog() {
-  $('logCard').hidden = runnerLog.length === 0;
+  $('logCard').hidden = tab !== 'main' || runnerLog.length === 0;
   $('log').replaceChildren(...runnerLog.slice(-15).reverse().map((e) => {
     const li = document.createElement('li');
     const t = document.createElement('time');
@@ -657,6 +684,9 @@ $('btnList').addEventListener('click', async () => {
 });
 
 load().then(() => { if (tab === 'plus') rpAutoRefresh(); });
+
+// 머리의 GitHub 아이콘 — 새 버전 확인 · 받기 · 다시 불러오기 (gitsync.js)
+UbobGitSync.create({ button: $('gitSync'), badge: $('gitCount'), notice: $('gitNotice') }).start();
 
 // 휴식 남은 시간, 근무 시간 안내는 시계처럼 흘러가야 한다
 setInterval(() => {

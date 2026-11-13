@@ -2,29 +2,44 @@
   "manifest_version": 3,
   "name": "유밥 자동 학습 도우미",
   "short_name": "유밥 자동학습",
-  "version": "2.3.1",
+  "version": "2.9.0",
   "minimum_chrome_version": "116",
-  "description": "ubob.com 계정으로 자동 로그인해 수강 중인 과정 목록을 가져오고, 보이지 않는 백그라운드 플레이어에서 미완료 강의를 배속으로 끝까지 자동 재생합니다. 근무 시간에만 진행하거나 강의 사이에 1분~설정한 시간 사이에서 무작위로 쉬도록 설정할 수 있습니다. 러닝플러스(runningplus.net)도 저장한 계정으로 자동 로그인하고 수강중 과정 목록을 보여줍니다.",
+  "description": "유밥 자동 학습과 러닝플러스 과정 조회. 알파캠퍼스는 역할별 필수 교육 5분야의 로그인·수강신청·실제 강의 재생을 자동으로 진행합니다.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["storage", "notifications", "offscreen", "alarms", "declarativeNetRequestWithHostAccess"],
-  "host_permissions": ["https://*.ubob.com/*", "https://*.runningplus.net/*"],
+  "permissions": ["storage", "notifications", "offscreen", "alarms", "declarativeNetRequestWithHostAccess", "sidePanel", "cookies", "downloads", "scripting", "nativeMessaging"],
+  "host_permissions": ["https://*.ubob.com/*", "https://*.runningplus.net/*", "https://alpha-campus.kr/*", "https://report.alpha-campus.kr/*"],
+  "side_panel": {
+    "default_path": "popup/popup.html?surface=sidepanel"
+  },
   "background": {
     "service_worker": "src/background.js"
   },
   "action": {
     "default_title": "유밥 자동 학습 도우미",
-    "default_popup": "popup/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png"
     }
   },
   "content_scripts": [
+    {
+      "matches": ["https://alpha-campus.kr/my/classRoom/classRoomDetail*"],
+      "js": ["src/alpha-player.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://alpha-campus.kr/catenoid.html*"],
+      "js": ["src/alpha-player-page.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "world": "MAIN"
+    },
     {
       "matches": ["https://*.ubob.com/*"],
       "js": ["src/shared.js", "src/content.js"],

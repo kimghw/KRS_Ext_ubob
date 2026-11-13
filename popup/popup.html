@@ -9,10 +9,17 @@
   <header>
     <img src="../icons/icon32.png" alt="" width="20" height="20">
     <h1>유밥 자동 학습</h1>
+    <!-- GitHub 새 버전 — 누르면 확인하고, 새 커밋이 있으면 귀퉁이에 그 수를 띄워 그때 누르면 받는다(git pull — 워크스페이스 브릿지가 돌린다, gitsync.js).
+         받은 뒤에는 ↻ 가 되고 한 번 더 누르면 확장을 다시 불러온다. 브릿지가 없으면 아래 안내 줄이 뜬다. -->
+    <button type="button" id="gitSync" class="git-sync" data-mode="idle" title="GitHub 새 버전 확인" aria-label="GitHub 새 버전 확인">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      <span id="gitCount" class="git-count" hidden></span>
+    </button>
   </header>
+  <p class="msg warn git-notice" id="gitNotice" role="status" hidden></p>
 
-  <!-- 자동 학습 시간 · 휴식 (유밥 백그라운드 자동 학습에 적용) -->
-  <section class="card topopts">
+  <!-- 자동 학습 시간 · 휴식 (유밥·알파 백그라운드 재생에 적용, 탭 줄 위치가 변하지 않게 모든 탭에서 표시) -->
+  <section class="card topopts" id="mainTopOptions">
     <label title="켜 두면 아래 시간대 밖에서는 자동 학습을 쉬고, 시간이 되면 이어서 진행합니다. 시간 밖에서 시작을 누르면 로그인·목록만 준비하고 근무 시간에 재생을 시작합니다.">
       <input type="checkbox" id="workHoursOnly"> 근무 시간대에만 자동 학습<span class="sub" id="workHoursSub"></span>
     </label>
@@ -31,9 +38,32 @@
   <nav class="tabs" role="tablist">
     <button type="button" role="tab" id="tabBtnMain" data-tab="main">유밥</button>
     <button type="button" role="tab" id="tabBtnPlus" data-tab="plus">플러스</button>
+    <button type="button" role="tab" id="tabBtnAlpha" data-tab="alpha">알파</button>
   </nav>
 
   <div id="tabMain" role="tabpanel" aria-labelledby="tabBtnMain">
+  <!-- 계정 -->
+  <section class="card account-card">
+    <div class="row">
+      <div class="label">계정</div>
+      <div class="links">
+        <button type="button" id="btnTestLogin" class="link" hidden>로그인 확인</button>
+        <button type="button" id="btnEditAccount" class="link" hidden>변경</button>
+      </div>
+    </div>
+    <div id="accountView" class="account-view" hidden>
+      <div class="auth"><span class="dot" id="authDot"></span><span class="saved" id="accountSaved"></span><span id="authText"></span></div>
+    </div>
+    <form id="accountForm" class="account-form">
+      <label>사이트 주소<input type="url" id="baseUrl" placeholder="https://krs.ubob.com" required></label>
+      <label>아이디<input type="text" id="userName" autocomplete="username" required></label>
+      <label>비밀번호<input type="password" id="password" autocomplete="current-password" required></label>
+      <button type="submit" class="primary">저장</button>
+      <p class="hint">비밀번호는 이 PC에만 저장됩니다.</p>
+      <p class="msg warn" id="accountError" hidden></p>
+    </form>
+  </section>
+
   <!-- 백그라운드 자동 학습 -->
   <section class="card">
     <div class="state"><span class="dot" id="dot"></span><span id="phaseText">…</span></div>
@@ -54,7 +84,6 @@
       <button type="button" id="btnPlayer" hidden>플레이어 화면 보기</button>
       <button type="button" id="btnStop" class="danger" hidden>중지</button>
     </div>
-    <p class="hint" id="startHint">로그인 → 수강 과정 목록 → 미완료 강의 재생 → 다음 과정까지 모두 자동으로 진행합니다. 화면에는 아무것도 뜨지 않습니다.</p>
     <div class="row diag-row">
       <button type="button" id="btnDiag" class="link">진단</button>
       <button type="button" id="btnDiagCopy" class="link" hidden>진단 결과 복사</button>
@@ -76,32 +105,11 @@
     <p class="empty" id="coursesEmpty">아직 불러온 목록이 없습니다.</p>
   </section>
 
-  <!-- 계정 -->
-  <section class="card">
-    <div class="row">
-      <div class="label">계정</div>
-      <button type="button" id="btnEditAccount" class="link" hidden>변경</button>
-    </div>
-    <div id="accountView" class="account-view" hidden>
-      <p class="saved" id="accountSaved"></p>
-      <div class="auth"><span class="dot" id="authDot"></span><span id="authText"></span></div>
-      <button type="button" id="btnTestLogin">로그인 확인</button>
-    </div>
-    <form id="accountForm" class="account-form">
-      <label>사이트 주소<input type="url" id="baseUrl" placeholder="https://krs.ubob.com" required></label>
-      <label>아이디<input type="text" id="userName" autocomplete="username" required></label>
-      <label>비밀번호<input type="password" id="password" autocomplete="current-password" required></label>
-      <button type="submit" class="primary">저장</button>
-      <p class="hint">비밀번호는 이 PC의 Chrome 프로필 안에만 저장되고, 이 사이트에 로그인할 때만 쓰입니다.</p>
-      <p class="msg warn" id="accountError" hidden></p>
-    </form>
-  </section>
-
   <!-- 설정 -->
   <section class="card options">
     <div class="label">재생 배속</div>
     <div class="seg" id="speeds"></div>
-    <p class="hint">과정마다 사이트가 허용하는 최대 배속을 넘지 않습니다.</p>
+    <p class="hint">사이트가 허용하는 배속까지만 적용됩니다.</p>
     <label><input type="checkbox" id="runnerMuted"> 백그라운드 재생 중 소리 끄기</label>
     <label><input type="checkbox" id="notify"> 과정 완료·확인 필요 시 데스크톱 알림</label>
     <label><input type="checkbox" id="enabled"> 강의 페이지를 탭에서 직접 볼 때도 배속·다음 강의 자동 진행</label>
@@ -110,6 +118,27 @@
 
   <!-- 러닝플러스 -->
   <div id="tabPlus" role="tabpanel" aria-labelledby="tabBtnPlus" hidden>
+  <section class="card account-card">
+    <div class="row">
+      <div class="label">러닝플러스 계정</div>
+      <div class="links">
+        <button type="button" id="rpBtnOpen" class="link" title="저장한 계정으로 로그인한 뒤 나의 학습실을 탭으로 엽니다" hidden>러닝플러스 열기</button>
+        <button type="button" id="rpBtnTestLogin" class="link" hidden>로그인 확인</button>
+        <button type="button" id="rpBtnEditAccount" class="link" hidden>변경</button>
+      </div>
+    </div>
+    <div id="rpAccountView" class="account-view" hidden>
+      <div class="auth"><span class="dot" id="rpAuthDot"></span><span class="saved" id="rpAccountSaved"></span><span id="rpAuthText"></span></div>
+    </div>
+    <form id="rpAccountForm" class="account-form">
+      <label>사이트 주소<input type="url" id="rpBaseUrl" placeholder="https://krs.runningplus.net" required></label>
+      <label>아이디<input type="text" id="rpUserName" autocomplete="username" required></label>
+      <label>비밀번호<input type="password" id="rpPassword" autocomplete="current-password" required></label>
+      <button type="submit" class="primary">저장</button>
+      <p class="hint">비밀번호는 이 PC에만 저장됩니다.</p>
+      <p class="msg warn" id="rpAccountError" hidden></p>
+    </form>
+  </section>
   <!-- 수강중 과정 (나의 학습실) -->
   <section class="card">
     <div class="row">
@@ -129,28 +158,107 @@
     <pre id="rpDiag" hidden></pre>
   </section>
 
-  <section class="card">
-    <div class="row">
-      <div class="label">러닝플러스 계정</div>
-      <button type="button" id="rpBtnEditAccount" class="link" hidden>변경</button>
-    </div>
-    <div id="rpAccountView" class="account-view" hidden>
-      <p class="saved" id="rpAccountSaved"></p>
-      <div class="auth"><span class="dot" id="rpAuthDot"></span><span id="rpAuthText"></span></div>
-      <div class="controls">
-        <button type="button" id="rpBtnOpen" class="primary" title="저장한 계정으로 로그인한 뒤 나의 학습실을 탭으로 엽니다">러닝플러스 열기</button>
-        <button type="button" id="rpBtnTestLogin">로그인 확인</button>
+  </div>
+
+  <div id="tabAlpha" role="tabpanel" aria-labelledby="tabBtnAlpha" hidden>
+    <section class="card alpha-account account-card">
+      <div class="row">
+        <h2>알파 계정</h2>
+        <div class="links">
+          <button type="button" id="alphaTestLogin" class="link" hidden>로그인 확인</button>
+          <button type="button" id="alphaEditAccount" class="link" hidden>변경</button>
+        </div>
       </div>
-    </div>
-    <form id="rpAccountForm" class="account-form">
-      <label>사이트 주소<input type="url" id="rpBaseUrl" placeholder="https://krs.runningplus.net" required></label>
-      <label>아이디<input type="text" id="rpUserName" autocomplete="username" required></label>
-      <label>비밀번호<input type="password" id="rpPassword" autocomplete="current-password" required></label>
-      <button type="submit" class="primary">저장</button>
-      <p class="hint">비밀번호는 이 PC의 Chrome 프로필 안에만 저장되고, 이 사이트에 로그인할 때만 쓰입니다.</p>
-      <p class="msg warn" id="rpAccountError" hidden></p>
-    </form>
-  </section>
+      <div id="alphaAccountView" class="account-view" hidden>
+        <div class="auth"><span class="dot" id="alphaAuthDot"></span><span class="saved" id="alphaAccountSaved"></span><span id="alphaAuthText"></span></div>
+      </div>
+      <form id="alphaAccountForm" class="account-form">
+        <label>아이디<input type="text" id="alphaUserName" autocomplete="username" required></label>
+        <label>비밀번호<input type="password" id="alphaPassword" autocomplete="current-password" required></label>
+        <div class="controls">
+          <button type="submit" id="alphaSaveAccount" class="primary">저장 및 로그인</button>
+          <button type="button" id="alphaCancelAccount" hidden>취소</button>
+        </div>
+        <p class="hint">비밀번호는 이 PC에만 저장됩니다.</p>
+      </form>
+      <p class="msg warn" id="alphaAccountError" role="status" hidden></p>
+    </section>
+    <section class="card alpha-intro">
+      <div class="row">
+        <h2>연구자 교육 자동 실행</h2>
+        <button type="button" id="alphaOpen" class="link">알파 열기</button>
+      </div>
+      <fieldset class="alpha-role">
+        <legend>교육 대상</legend>
+        <label><input type="radio" name="alphaRole" value="researcher"> 참여연구원</label>
+        <label><input type="radio" name="alphaRole" value="principal"> 연구책임자</label>
+      </fieldset>
+      <p class="msg" id="alphaRequirement" hidden>교육 대상을 선택하세요.</p>
+      <p class="hint" id="alphaSourceNote"></p>
+      <p class="hint" id="alphaAuthHint" hidden>알파 계정을 저장하거나 로그인하세요.</p>
+    </section>
+    <section class="card alpha-runner">
+      <div class="state"><span class="dot" id="alphaRunDot"></span><span id="alphaRunPhase">대기 중</span></div>
+      <p class="msg" id="alphaRunMessage" role="status" aria-live="polite" hidden></p>
+      <div id="alphaNowPlaying" hidden>
+        <p class="alpha-current-course" id="alphaRunCourse"></p>
+        <p class="hint" id="alphaRunLesson" hidden></p>
+        <div class="bar" id="alphaRunProgress" hidden><div id="alphaRunBar"></div></div>
+        <div class="meta"><span id="alphaRunTime"></span><span id="alphaRunPercent"></span></div>
+      </div>
+      <details id="alphaSkipped" class="alpha-skipped" hidden>
+        <summary id="alphaSkippedSummary">건너뛴 과정</summary>
+        <ul id="alphaSkippedList"></ul>
+      </details>
+      <div class="controls">
+        <button type="button" id="alphaStartEnrolled" class="primary" disabled>수강 중인 과정 백그라운드 학습</button>
+        <button type="button" id="alphaStart" disabled>미신청 과정 신청 후 학습</button>
+        <button type="button" id="alphaContinue" class="primary" hidden>설문 완료 확인 후 계속</button>
+        <button type="button" id="alphaRetry" hidden>다시 시도</button>
+        <button type="button" id="alphaPlayerOpen" hidden>학습 화면 열기</button>
+        <button type="button" id="alphaStop" class="danger" hidden>중지</button>
+      </div>
+      <p class="hint" id="alphaStartHint" hidden></p>
+    </section>
+    <section class="card alpha-certificates">
+        <div class="row">
+          <h2>전체 수료증</h2>
+          <span id="alphaCertificateCount" class="chip" hidden></span>
+        </div>
+        <div class="controls">
+          <button type="button" id="alphaCertificatesAll" class="primary">모두 수료증 받기</button>
+          <button type="button" id="alphaCertificatesAllStop" class="danger" hidden>전체 받기 중지</button>
+        </div>
+        <div id="alphaCertificateBatch" class="alpha-certificate-batch" hidden>
+          <div class="state"><span class="dot" id="alphaCertificateBatchDot"></span><span id="alphaCertificateBatchPhase"></span></div>
+          <p class="msg" id="alphaCertificateBatchMessage" role="status" aria-live="polite" hidden></p>
+          <p class="hint" id="alphaCertificateBatchProgress" hidden></p>
+          <div class="bar" id="alphaCertificateBatchBar" role="progressbar" aria-label="수료증 발급 확인" aria-valuemin="0" hidden><div id="alphaCertificateBatchBarFill"></div></div>
+        </div>
+        <p class="hint">저장 위치: 다운로드 폴더 ‘알파 수료증’</p>
+        <details id="alphaCertificateDetails" hidden>
+          <summary>과정별 저장 상태</summary>
+          <ul id="alphaCertificateList"></ul>
+        </details>
+        <p class="hint" id="alphaCertificateEmpty" hidden>저장한 수료증이 없습니다.</p>
+        <p class="msg" id="alphaCertificateResult" role="status" aria-live="polite" hidden></p>
+        <button type="button" id="alphaCertificateRetry" title="위에서 선택한 교육에만 적용됩니다." disabled>수료증 저장 확인·재시도</button>
+    </section>
+    <div id="alphaCategories"></div>
+    <section class="card alpha-request">
+      <div class="row">
+        <h2>수강신청 목록</h2>
+        <span id="alphaSelectedCount" class="chip"></span>
+      </div>
+      <ul id="alphaSelected" class="alpha-selected"></ul>
+      <p class="empty" id="alphaSelectedEmpty">위 분류에서 신청할 과정을 선택하세요.</p>
+      <p class="msg" id="alphaResult" role="status" aria-live="polite" hidden></p>
+      <div class="controls">
+        <button type="button" id="alphaCheck">신청 가능 여부만 확인</button>
+        <button type="button" id="alphaEnroll" disabled>수강신청만 실행</button>
+      </div>
+      <p class="hint" id="alphaEnrollHint" hidden></p>
+    </section>
   </div>
 
   <section class="card" id="logCard" hidden>
@@ -159,6 +267,9 @@
   </section>
 
   <script src="../src/shared.js"></script>
+  <script src="../src/alpha-catalog.js"></script>
+  <script src="alpha.js"></script>
+  <script src="gitsync.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

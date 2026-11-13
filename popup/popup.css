@@ -37,9 +37,25 @@ body {
   color: var(--text);
   font: 13px/1.45 system-ui, -apple-system, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
 }
+body.side-panel { width: auto; min-width: 280px; max-width: 760px; margin: 0 auto; }
 
 header { display: flex; align-items: center; gap: 8px; margin: 0 2px 10px; }
 header h1 { flex: 1; margin: 0; font-size: 15px; font-weight: 700; }
+
+/* GitHub 새 버전 (gitsync.js) — 새 커밋·다시 불러오기 대기는 강조색, 받을 수 없는 겹침·갈라짐은 빨간 배지, 브릿지 없음·확인 실패는 옅게 */
+.git-sync { position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; color: var(--muted); }
+.git-sync svg { width: 16px; height: 16px; fill: currentColor; }
+.git-sync[data-mode="new"], .git-sync[data-mode="reload"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.git-sync[data-mode="off"] svg, .git-sync[data-mode="error"] svg { opacity: .45; }
+.git-sync.busy svg { animation: gitPulse .7s ease-in-out infinite alternate; }
+@keyframes gitPulse { to { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .git-sync.busy svg { animation: none; opacity: .5; } }
+.git-count {
+  position: absolute; top: -5px; right: -5px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px;
+  background: var(--accent); color: var(--on-accent); font-size: 9px; font-weight: 700; line-height: 15px; text-align: center; box-shadow: 0 0 0 2px var(--bg);
+}
+.git-sync[data-mode="diverged"] .git-count, .git-sync[data-mode="blocked"] .git-count { background: var(--danger); }
+.git-notice { margin: 0 0 8px; }
 
 /* 상단 옵션: 근무 시간 · 휴식 */
 .topopts { padding: 6px 12px; display: grid; gap: 0; }
@@ -165,3 +181,80 @@ button:disabled { opacity: .5; cursor: default; }
 #log li { display: flex; gap: 8px; padding: 3px 0; border-top: 1px solid var(--line); }
 #log li:first-child { border-top: 0; }
 #log time { color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+
+/* 알파 수강신청 */
+.alpha-intro h2, .alpha-request h2, .alpha-account h2, .alpha-certificates h2 { font-size: 14px; margin: 0; }
+.alpha-account > .row { margin-bottom: 10px; }
+/* 계정 카드: 저장된 계정은 두 줄 — 제목·동작(로그인 확인, 변경) / 아이디·로그인 상태 */
+.account-card { padding-top: 9px; padding-bottom: 9px; }
+.account-card > .row { align-items: baseline; margin-bottom: 4px; }
+.account-card > .row > .label, .account-card > .row > h2 { margin-bottom: 0; }
+.account-card .links { margin-bottom: 0; }
+.account-card .account-view { gap: 0; justify-items: stretch; }
+.account-card .auth { gap: 6px; }
+.account-card .saved { flex: none; max-width: 45%; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-card .saved:not(:empty)::after { content: " ·"; color: var(--muted); font-weight: 400; }
+.account-card .account-form { margin-top: 6px; }
+.alpha-current-course { margin: 10px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+#alphaRunProgress { margin-top: 8px; }
+.alpha-runner .controls { flex-wrap: wrap; }
+.alpha-runner #alphaStart, .alpha-runner #alphaStartEnrolled, .alpha-runner #alphaContinue { flex-basis: 100%; }
+.alpha-skipped { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.alpha-skipped summary { cursor: pointer; }
+.alpha-skipped ul { margin: 6px 0 0; padding-left: 18px; }
+.alpha-skipped li { margin-top: 6px; overflow-wrap: anywhere; }
+.alpha-skipped strong { display: block; color: var(--text); font-weight: 500; }
+.alpha-certificate-batch { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.alpha-certificate-batch .msg { margin-bottom: 0; }
+.alpha-certificates details { margin-top: 8px; font-size: 12px; }
+.alpha-certificates summary { color: var(--muted); cursor: pointer; }
+.alpha-certificates ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.alpha-certificates details ul { max-height: 300px; overflow-y: auto; }
+.alpha-certificates li { padding: 7px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.alpha-certificates li:first-child { border-top: 0; }
+.alpha-certificate-title { margin: 0 0 3px; font-size: 12px; font-weight: 500; }
+.alpha-certificate-state { margin: 0; font-size: 12px; color: var(--muted); }
+.alpha-certificate-state.complete { color: var(--done); }
+.alpha-certificate-state.failed, .alpha-certificate-state.interrupted, .alpha-certificate-state.missing, .alpha-certificate-state.unconfirmed { color: var(--warn); }
+.alpha-certificate-file { margin: 3px 0 0; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+#alphaCertificateRetry { margin-top: 9px; width: 100%; }
+.alpha-role { margin: 8px 0 8px; padding: 0; border: 0; display: flex; gap: 8px; flex-wrap: wrap; }
+/* "교육 대상" 글자는 화면에 보이지 않고 화면 낭독기용 이름으로만 남긴다. */
+.alpha-role legend { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.alpha-role label { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; cursor: pointer; }
+.alpha-role label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.alpha-role input, .alpha-choice input { accent-color: var(--accent); flex: none; margin: 0; }
+.alpha-category h3 { margin: 0; font-size: 13px; }
+.alpha-category .row { align-items: center; }
+.alpha-category .chip { color: var(--accent); }
+.alpha-choice { display: flex; gap: 8px; align-items: flex-start; padding-top: 10px; line-height: 1.5; cursor: pointer; }
+.alpha-choice input { margin-top: 3px; }
+.alpha-choice span { overflow-wrap: anywhere; }
+.alpha-course-links { margin-top: 7px; margin-left: 21px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.alpha-course-result { margin-left: 21px; }
+/* 과정별 메뉴: 누를 수 있는 것은 굵은 강조색, 꺼진 것은 옅은 회색으로 확실히 구분한다. */
+.alpha-course-links button.link { font-weight: 700; }
+.alpha-course-links button.link:disabled { color: var(--muted); font-weight: 400; opacity: .55; text-decoration: none; }
+.alpha-course-links button.link.on { text-decoration: underline; text-underline-offset: 3px; }
+/* 과정 이름 옆의 수강 상태 */
+.alpha-course-state { flex: none; margin-left: auto; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 18px;
+  white-space: nowrap; color: var(--muted); border: 1px solid var(--line); }
+.alpha-course-state.completed { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+.alpha-course-state.learning { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.alpha-course-state.survey, .alpha-course-state.exam, .alpha-course-state.attention { color: var(--warn); border-color: var(--warn); }
+.alpha-course-detail { margin-left: 21px; }
+.alpha-selected { list-style: none; padding: 0; margin: 10px 0 0; }
+.alpha-selected li { padding: 9px 0; border-top: 1px solid var(--line); }
+.alpha-selected .alpha-item-title { margin: 0 0 5px; font-size: 12px; overflow-wrap: anywhere; }
+.alpha-selected .alpha-item-status { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.alpha-selected .alpha-item-status.available { color: var(--accent); }
+.alpha-selected .alpha-item-status.enrolled, .alpha-selected .alpha-item-status.completed { color: var(--done); }
+.alpha-selected .alpha-item-status.error, .alpha-selected .alpha-item-status.manual, .alpha-selected .alpha-item-status.login-required { color: var(--warn); }
+.alpha-request .controls { display: grid; grid-template-columns: 1fr; }
+.alpha-request .controls button { width: 100%; }
+@media (max-width: 340px) {
+  body.side-panel { padding: 8px; }
+  .topopts .opt { flex-wrap: wrap; }
+  .topopts .range { margin-left: auto; }
+  .alpha-role label { flex: 1; justify-content: center; padding-left: 5px; padding-right: 5px; }
+}
