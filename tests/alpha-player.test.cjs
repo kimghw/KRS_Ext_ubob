@@ -33,7 +33,7 @@ function sitePlayerDocument(state, { startsOnPlay = true } = {}) {
 
 function setup({ active = true, wrongLesson = false, dialog = false, failPlay = false, iframe = false, loading = false,
   embedded = true, ancestorOrigin = 'chrome-extension://extension-id', playerDocument = null, emptyFrame = false,
-  blockedFrame = false, embed = false } = {}) {
+  blockedFrame = false, embed = false, watched = null } = {}) {
   let clock = 1000000;
   const events = {};
   const media = {
@@ -79,7 +79,21 @@ function setup({ active = true, wrongLesson = false, dialog = false, failPlay = 
   const embedFrame = { contentDocument: null, contentWindow: embedWindow,
     getAttribute(name) { return name === 'src' ? 'https://make.alpha-campus.kr/bubble/embed/281' : null; },
     get src() { return this.getAttribute('src'); } };
+  // watched: 강의실 페이지 영역(alpha-classroom-page.js)이 알려 주는 "이미 본 구간". null이면 그 스크립트가 없는 화면이다.
+  const classroom = { segments: watched };
+  const rootAttributes = {};
   const document = {
+    ...(watched === null ? {} : {
+      documentElement: {
+        removeAttribute(name) { delete rootAttributes[name]; },
+        getAttribute(name) { return rootAttributes[name] ?? null; },
+      },
+      dispatchEvent(event) {
+        if (event.type !== 'alpha-auto-classroom-command') return;
+        rootAttributes['data-alpha-auto-classroom'] = JSON.stringify(classroom.segments === null
+          ? { ready: false } : { ready: true, segments: classroom.segments });
+      },
+    }),
     querySelectorAll(selector) {
       if (selector === 'video, audio') return framed || embed ? [] : [media];
       if (selector === 'iframe') return embed ? [embedFrame] : framed ? [frame] : [];
@@ -116,7 +130,7 @@ function setup({ active = true, wrongLesson = false, dialog = false, failPlay = 
   vm.runInNewContext(source, context);
   const embedPlayer = { commands: embedCommands, starts: embedStarts,
     send: (data, source = embedWindow, origin = 'https://make.alpha-campus.kr') => windowEvents.message({ source, origin, data }) };
-  return { media, events, calls, opened, embed: embedPlayer, tick: () => interval?.(), advanceClock: ms => { clock += ms; },
+  return { media, events, calls, opened, classroom, embed: embedPlayer, tick: () => interval?.(), advanceClock: ms => { clock += ms; },
     stop: (senderId = 'extension-id') => listener?.({ type: 'alpha-player-stop' }, { id: senderId }, () => {}) };
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -403,4 +417,72 @@ test('an authoring-tool lesson starts from the first part the site has not recor
     await h.tick();
     assert.deepEqual(h.embed.starts, [from], watched);
   }
+});
+
+// 영상 차시: 사이트는 실제로 본 초의 수로 진도를 계산한다. 안 본 구간이 남아 있으면 그 지점으로 되돌아가 본다.
+// 실제 영상처럼, 끝난 뒤 앞으로 옮기면 끝난 상태가 풀리도록 흉내 낸다.
+function seekable(media) {
+  let position = media.currentTime;
+  Object.defineProperty(media, 'currentTime', { get: () => position, set(value) { position = value; media.ended = false; } });
+  return media;
+}
+
+test('playback that resumed past a part the site has not recorded goes back to it once', async () => {
+  // 실제 사례(2026-11-14): 25초에서 갑자기 끊긴 강의를 사이트가 19초부터 이어 재생해, 앞부분이 빈 채 97%로 끝났다.
+  const h = setup({ watched: '' });
+  h.media.duration = 689;
+  await settle();
+  assert.equal(h.media.plays, 1);
+  h.media.currentTime = 24; h.classroom.segments = '19[.]25';
+  await h.tick();
+  assert.equal(h.media.currentTime, 0, 'the unwatched beginning is played');
+  assert.equal(h.calls.at(-1).kind, 'playing');
+  h.media.currentTime = 6; h.classroom.segments = '0[.]7[,]19[.]25';
+  await h.tick();
+  assert.equal(h.media.currentTime, 6, 'playback before the next gap is left alone');
+});
+
+test('a new lesson, a normal resume and a screen without the classroom script are never moved', async () => {
+  for (const [watched, position] of [['0[.]5', 5], ['0[.]3[,]4[.]6', 6], ['0[.]503', 503], ['', 1.5], [null, 300]]) {
+    const h = setup({ watched });
+    h.media.duration = 689;
+    await settle();
+    h.media.currentTime = position;
+    await h.tick();
+    assert.equal(h.media.currentTime, position, String(watched));
+    assert.equal(h.calls.at(-1).kind, 'playing');
+  }
+});
+
+test('an end that leaves an unwatched part goes back to it instead of reporting the end', async () => {
+  const h = setup({ watched: '19[.]689' });
+  seekable(h.media).duration = 689;
+  await settle();
+  h.media.currentTime = 20;
+  await h.tick();
+  assert.equal(h.media.currentTime, 0, 'first return');
+  // 사이트가 다시 끝 위치로 옮겨 곧바로 끝난 경우에도 한 번 더 돌아간다.
+  Object.assign(h.media, { paused: true, ended: true }); h.media.currentTime = 689; h.media.ended = true;
+  await h.events.ended();
+  await settle();
+  assert.equal(h.media.currentTime, 0, 'second return');
+  assert.equal(h.media.plays, 2, 'playback is started again after the return');
+  assert.notEqual(h.calls.at(-1).kind, 'ended');
+  // 두 번 돌아가도 남으면 되풀이하지 않고 종료를 알린다(실행 쪽이 사이트 진도를 확인한다).
+  Object.assign(h.media, { paused: true }); h.media.currentTime = 689; h.media.ended = true;
+  await h.events.ended();
+  await settle();
+  assert.equal(h.media.currentTime, 689);
+  assert.equal(h.calls.at(-1).kind, 'ended');
+});
+
+test('a fully watched lesson ends normally', async () => {
+  const h = setup({ watched: '0[.]688' });
+  seekable(h.media).duration = 689.4;
+  await settle();
+  Object.assign(h.media, { paused: true }); h.media.currentTime = 689.4; h.media.ended = true;
+  await h.events.ended();
+  await settle();
+  assert.equal(h.media.currentTime, 689.4);
+  assert.equal(h.calls.at(-1).kind, 'ended');
 });

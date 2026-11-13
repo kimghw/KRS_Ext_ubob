@@ -34,6 +34,13 @@
       "all_frames": true
     },
     {
+      "matches": ["https://alpha-campus.kr/my/classRoom/classRoomDetail*"],
+      "js": ["src/alpha-classroom-page.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
       "matches": ["https://alpha-campus.kr/catenoid.html*"],
       "js": ["src/alpha-player-page.js"],
       "run_at": "document_idle",

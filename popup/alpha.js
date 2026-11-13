@@ -19,9 +19,13 @@
   let controlRevision = 0;
   let controlMessage = '';
   let controlError = false;
+  // 진행 중인 신청 작업의 종류('alpha-check' · 'alpha-enroll'). 없으면 false.
   let actionPending = false;
   let localMessage = '';
   let localError = false;
+  // 역할 선택 옆 수강신청 버튼의 결과(그 버튼 바로 아래에 보여 준다).
+  let enrollMessage = '';
+  let enrollError = false;
   let categoriesKey = '';
   // 과정별 메뉴(설문 바로가기·자동 설문·수료증 받기)의 진행 상태: { courseId, type, pending, confirm, message, error }
   let courseAction = null;
@@ -603,10 +607,17 @@
     }));
     const validation = validRole(preferences.role) ? catalog.validateSelection(preferences.role, preferences.selectedIds) : { ok: false };
     const available = matched ? (state.items || []).filter((item) => item.canEnroll && preferences.selectedIds.includes(item.courseId)).length : 0;
+    const enrolling = actionPending === 'alpha-enroll' || (!!state.busy && state.operation === 'enroll');
     byId('alphaCheck').disabled = busy() || !validation.ok;
-    byId('alphaCheck').textContent = actionPending || state.busy ? '처리 중…' : '신청 가능 여부만 확인';
-    byId('alphaEnroll').disabled = busy() || !validation.ok || available === 0;
-    byId('alphaEnroll').textContent = available ? `신청 가능한 ${available}개 신청만 실행` : '수강신청만 실행';
+    byId('alphaCheck').textContent = !enrolling && (actionPending || state.busy) ? '처리 중…' : '신청 가능 여부만 확인';
+    // 수강신청은 역할 선택 옆에 있다. 미리 확인하지 않아도 되며, 신청할 때 신청 가능 여부를 과정마다 다시 확인한다.
+    byId('alphaEnroll').disabled = busy() || !validation.ok;
+    byId('alphaEnroll').textContent = enrolling ? '신청 중…' : '수강신청';
+    byId('alphaEnroll').title = !validRole(preferences.role) ? '교육 대상을 먼저 선택하세요.'
+      : validation.ok ? '선택한 5개 과정 중 미신청 과정을 신청합니다.' : '5개 분류를 모두 선택하세요.';
+    byId('alphaEnrollResult').textContent = enrollMessage;
+    byId('alphaEnrollResult').hidden = !enrollMessage;
+    byId('alphaEnrollResult').className = `msg${enrollError ? ' warn' : ''}`;
     const enrollHint = validation.ok && matched && available === 0 ? '자동 신청 가능한 과정이 없습니다.' : '';
     byId('alphaEnrollHint').textContent = enrollHint;
     byId('alphaEnrollHint').hidden = !enrollHint;
@@ -630,21 +641,28 @@
 
   async function run(type) {
     if (busy()) return;
-    actionPending = true;
-    localMessage = type === 'alpha-enroll' ? '선택한 과정의 수강신청을 진행하고 있습니다.' : '알파의 신청 가능 여부를 확인하고 있습니다.';
+    const enrolling = type === 'alpha-enroll';
+    actionPending = type;
+    // 신청 결과는 수강신청 버튼 아래에, 확인 결과는 수강신청 목록에 보여 준다.
+    localMessage = enrolling ? '' : '알파의 신청 가능 여부를 확인하고 있습니다.';
     localError = false;
+    enrollMessage = '';
+    enrollError = false;
     render();
     try {
       const result = await action(type, { role: preferences.role, courseIds: [...preferences.selectedIds] });
       if (result?.ok === false) throw new Error(result.error || result.message || '요청을 처리하지 못했습니다.');
       const saved = await chrome.storage.local.get({ alphaState: { busy: false, items: [] } });
       state = saved.alphaState;
-      localMessage = result?.message || state.message || '확인이 끝났습니다. 과정별 결과를 확인하세요.';
+      const message = result?.message || state.message || '확인이 끝났습니다. 과정별 결과를 확인하세요.';
+      if (enrolling) enrollMessage = message; else localMessage = message;
     } catch (error) {
-      localMessage = error.message;
-      localError = true;
+      if (enrolling) { enrollMessage = error.message; enrollError = true; }
+      else { localMessage = error.message; localError = true; }
     } finally {
       actionPending = false;
+      // 신청으로 바뀐 과정별 수강 상태(미신청 → 수강신청)를 바로 반영한다.
+      if (enrolling) requestCourseStatus(true);
       render();
     }
   }
@@ -654,6 +672,8 @@
     preferences = { role: input.value, selectedIds: catalog.defaultsForRole(input.value) };
     localMessage = '';
     localError = false;
+    enrollMessage = '';
+    enrollError = false;
     controlMessage = '';
     controlError = false;
     certificateMessage = '';

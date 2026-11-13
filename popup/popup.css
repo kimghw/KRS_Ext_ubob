@@ -219,6 +219,10 @@ button:disabled { opacity: .5; cursor: default; }
 .alpha-certificate-file { margin: 3px 0 0; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 #alphaCertificateRetry { margin-top: 9px; width: 100%; }
 .alpha-role { margin: 8px 0 8px; padding: 0; border: 0; display: flex; gap: 8px; flex-wrap: wrap; }
+/* 수강신청은 역할에 따라 과정이 달라지므로 역할 선택과 같은 줄에 둔다. */
+.alpha-role-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.alpha-role-row .alpha-role { margin: 0; flex: 1 1 auto; }
+.alpha-role-row button { flex: none; margin-left: auto; }
 /* "교육 대상" 글자는 화면에 보이지 않고 화면 낭독기용 이름으로만 남긴다. */
 .alpha-role legend { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .alpha-role label { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; cursor: pointer; }

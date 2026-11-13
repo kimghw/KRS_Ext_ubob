@@ -356,6 +356,38 @@
     return { kind: media.paused ? (ownedMedia ? 'paused' : 'ready') : 'playing' };
   }
 
+  // 사이트가 이 차시에서 이미 본 것으로 치는 구간. 강의실 페이지 영역의 alpha-classroom-page.js가 알려 준다. 알 수 없으면 null.
+  const CLASSROOM_COMMAND = 'alpha-auto-classroom-command';
+  const CLASSROOM_ATTRIBUTE = 'data-alpha-auto-classroom';
+  function watchedSegments() {
+    try {
+      const root = document.documentElement;
+      root.removeAttribute(CLASSROOM_ATTRIBUTE);
+      document.dispatchEvent(new CustomEvent(CLASSROOM_COMMAND));
+      const state = JSON.parse(root.getAttribute(CLASSROOM_ATTRIBUTE) || 'null');
+      return state?.ready ? String(state.segments || '') : null;
+    } catch { return null; }
+  }
+
+  // 사이트는 영상 차시를 다시 열면 마지막 위치에서 이어 재생하지만, 진도는 실제로 본 초의 수로 계산한다.
+  // 재생이 갑자기 끊겨(확장 새로고침 등) 그때까지 본 구간이 저장되지 않으면 앞부분이 빈 채로 남아, 끝까지 봐도 차시가 완료되지 않는다
+  // (실제 사례 2026-11-14: 25초에서 끊긴 강의가 97%로 끝남). 지금 위치 앞에 안 본 구간이 있으면 그 첫 지점으로 되돌려 거기서부터 본다.
+  // 되돌린 뒤 끝까지 보면 그 뒤의 빈 구간도 모두 채워지므로 한 강의실에서 두 번까지만 한다.
+  let rewinds = { url: '', count: 0 };
+  function rewindToUnwatched(media) {
+    if (!media || media.sitePlayer || !(media.duration > 0)) return false;
+    if (rewinds.url !== location.href) rewinds = { url: location.href, count: 0 };
+    if (rewinds.count >= 2) return false;
+    const segments = watchedSegments();
+    if (segments === null) return false;
+    const from = firstUnwatched(segments, media.duration);
+    // 모두 봤거나, 그 지점(또는 그 앞)을 이미 보고 있으면 그대로 둔다.
+    if (from === null || media.currentTime - from <= 2) return false;
+    try { media.currentTime = from; } catch { return false; }
+    rewinds.count++;
+    return true;
+  }
+
   async function heartbeat() {
     if (sending) { pending = true; return; }
     sending = true;
@@ -375,6 +407,8 @@
         media.addEventListener('ended', heartbeat);
         media.addEventListener('error', heartbeat);
       }
+      // 끝까지 왔는데 사이트 기준으로 안 본 구간이 남아 있으면, 종료로 알리지 않고 그 구간으로 돌아가 이어서 본다.
+      if (media && ownedMedia === media && media.ended && rewindToUnwatched(media)) lastPlayedMedia = null;
       const status = snapshot(media);
       const response = await sendHeartbeat({
         url: location.href, runId, ...status,
@@ -405,6 +439,8 @@
           pending = true;
         }
       }
+      // 재생이 시작된 뒤(사이트가 마지막 위치로 옮긴 뒤) 그 앞에 안 본 구간이 있으면 거기서부터 본다.
+      if (status.kind === 'playing') rewindToUnwatched(media);
     } catch { pauseOwned(); }
     finally {
       sending = false;
