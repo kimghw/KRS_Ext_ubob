@@ -161,7 +161,9 @@
           : !selectionValid() ? '신청하려면 5개 분류를 모두 선택하세요.' : '';
     byId('alphaStartHint').textContent = hint;
     byId('alphaStartHint').hidden = !hint;
-    const skipped = runner.mode === 'enrolled' && Array.isArray(runner.skippedCourses) ? runner.skippedCourses : [];
+    // 미신청·대기·기간 종료로 제외한 과정과, 자동으로 더 진행할 수 없어 미뤄 둔 과정(재생되지 않는 강의 등)을 함께 보여 준다.
+    const skipped = [...(runner.mode === 'enrolled' && Array.isArray(runner.skippedCourses) ? runner.skippedCourses : []),
+      ...(Array.isArray(runner.deferredCourses) ? runner.deferredCourses : [])];
     byId('alphaSkipped').hidden = skipped.length === 0;
     byId('alphaSkippedSummary').textContent = `건너뛴 과정 ${skipped.length}개`;
     byId('alphaSkippedList').replaceChildren(...skipped.map((item) => {
@@ -526,7 +528,9 @@
           'not-enrolled': '미신청', waiting: '승인 대기', attention: '확인 필요' }[shownState];
         if (stateLabel) label.append(element('span', `alpha-course-state ${shownState}`, stateLabel));
         const links = element('div', 'alpha-course-links');
-        const open = element('button', 'link', '과정 상세 보기');
+        // 신청한 과정은 내 강의실의 그 과정으로, 미신청·대기·미확인 과정은 교육탐색의 과정 소개로 열린다.
+        const hasRoom = !!statusOf(course.id) && !['not-enrolled', 'waiting'].includes(statusOf(course.id));
+        const open = element('button', 'link', hasRoom ? '강의실 열기' : '과정 상세 보기');
         open.type = 'button';
         open.addEventListener('click', () => openCourse(course.id));
         links.append(open);
@@ -706,7 +710,7 @@
     if (changes.alphaRunner) {
       runner = changes.alphaRunner.newValue || { running: false, phase: 'idle' };
       // 실행이 과정을 넘기거나 끝내면(영상 완료·수료) 과정별 메뉴 상태를 다시 확인한다.
-      const key = [runner.courseId, (runner.surveyCourses || []).length, (runner.examCourses || []).length, (runner.completedCourseIds || []).length, runner.phase === 'done'].join('|');
+      const key = [runner.courseId, (runner.surveyCourses || []).length, (runner.examCourses || []).length, (runner.deferredCourses || []).length, (runner.completedCourseIds || []).length, runner.phase === 'done'].join('|');
       if (key !== runnerProgressKey) { runnerProgressKey = key; requestCourseStatus(true); }
     }
     if (changes.alphaCourseStatus) courseStatus = changes.alphaCourseStatus.newValue || { loginId: '', items: {} };

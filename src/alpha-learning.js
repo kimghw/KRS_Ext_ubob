@@ -3,7 +3,9 @@
   'use strict';
   const ORIGIN = 'https://alpha-campus.kr';
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  const MEDIA_TYPES = new Set([2, 3, 5]);
+  // 15(INTERACTIVE, 사이트 이름 "저작도구")도 재생 대상이다. 실제 값(2026-11-13): 영상 파일 하나를 저작도구 플레이어로
+  // 감싼 강의이고 상호작용은 영상 끝의 링크·이미지뿐이다. 숨겨진 플레이어가 그 플레이어의 영상을 재생한다(alpha-embed-player.js).
+  const MEDIA_TYPES = new Set([2, 3, 5, 15]);
   // ALPHA _app-1661222066ac702b.js의 contentPool type 매핑:
   // 10 EXAM_PAPER, 11 REPORT, 12 SURVEY (surveyPaper), 15 INTERACTIVE.
   const CONTENT_TYPES = Object.freeze({ EXAM: 10, REPORT: 11, SURVEY: 12, INTERACTIVE: 15 });
@@ -36,6 +38,20 @@
     // classRoomDetail은 숫자 4를 받으면 플레이어 영역을 렌더링하지 않는다.
     url.searchParams.set('type', 'ONLINE');
     if (lessonId) url.searchParams.set('sequenceLessonId', lessonId);
+    return url.href;
+  }
+
+  // 과정 목록에서 과정을 눌렀을 때 열 내 강의실 주소. 신청하지 않았거나 아직 들어갈 수 없는 과정,
+  // 강의실을 확인하지 못한 과정은 null을 돌려준다(교육탐색의 과정 소개를 연다).
+  function courseRoomUrl(result) {
+    if (!result || ['not-enrolled', 'waiting'].includes(result.status) || !UUID.test(result.registrationId)) return null;
+    let url;
+    try { url = new URL(result.url); } catch { return null; }
+    if (url.origin !== ORIGIN || url.pathname !== '/my/classRoom/classRoomDetail' ||
+        url.searchParams.get('registrationId') !== result.registrationId) return null;
+    // 영상이 남은 과정은 차시를 지정하지 않고 과정의 강의실로 연다. 백그라운드에서 재생 중인 강의를 탭에서 또 열지 않는다.
+    // 설문처럼 직접 진행할 차시가 정해진 과정은 그 차시가 그대로 열린다.
+    if (result.status === 'ready') url.searchParams.delete('sequenceLessonId');
     return url.href;
   }
 
@@ -110,12 +126,10 @@
     const surveyOnly = mediaLessons.length > 0 && mediaLessons.every(lesson => lesson.completed) &&
       remaining.length > 0 && remaining.every(lesson => lesson.type === CONTENT_TYPES.SURVEY);
     const attentionReason = surveyOnly ? 'survey'
-      : remaining.some(lesson => lesson.type === CONTENT_TYPES.INTERACTIVE) ? 'interactive'
       : remaining.some(lesson => [CONTENT_TYPES.EXAM, CONTENT_TYPES.REPORT].includes(lesson.type)) ? 'assessment'
       : 'completion';
     const messages = {
       survey: '영상 학습을 마쳤습니다. 마지막 설문을 알파 강의실에서 진행하세요.',
-      interactive: '영상 학습을 마쳤습니다. 인터랙티브 학습과 남은 수료 조건을 알파 강의실에서 확인하세요.',
       assessment: '영상 학습을 마쳤습니다. 시험·과제·설문을 알파 강의실에서 진행하세요.',
       completion: remaining.length ? '나머지 학습을 알파 강의실에서 진행하세요.'
         : '강의 학습을 마쳤습니다. 수료 상태와 남은 조건을 알파 강의실에서 확인하세요.',
@@ -168,6 +182,6 @@
     return { inspect, registration };
   }
 
-  root.AlphaLearning = { createClient, parseRegistration, classroomUrl };
+  root.AlphaLearning = { createClient, parseRegistration, classroomUrl, courseRoomUrl };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.AlphaLearning;
 })(globalThis);

@@ -172,22 +172,138 @@ test('an account switch during a learning query prevents navigation', async () =
   await flush(() => f.state.alphaRunner?.phase === 'attention');
   assert.equal(f.calls.navigate.length, 0); assert.equal(f.state.alphaRunner.running, false);
 });
-test('watchdog pauses playback when the account changes or session expires', async () => {
-  for (const session of [{ authenticated: true, loginId: 'someone-else' }, { authenticated: false }]) {
-    const f = fixture(); await f.runner.start(selection()); await flush(() => f.calls.navigate.length > 0 && f.state.alphaRunner?.documentId != null);
-    f.setSession(session); await f.runner.tick();
+test('watchdog pauses playback when the account changes, without logging in again', async () => {
+  const f = fixture(); await f.runner.start(selection()); await flush(() => f.calls.navigate.length > 0 && f.state.alphaRunner?.documentId != null);
+  f.setSession({ authenticated: true, loginId: 'someone-else' }); await f.runner.tick();
+  assert.equal(f.state.alphaRunner.phase, 'attention'); assert.equal(f.state.alphaRunner.running, false);
+  assert.ok(f.calls.hostPause > 0);
+  assert.equal(f.calls.login, 1, 'only the login at the start'); assert.equal(f.calls.navigate.length, 1);
+});
+
+// ---------- 로그인 만료: 저장한 계정으로 다시 로그인해 이어 간다 ----------
+const tester = () => ({ authenticated: true, loginId: 'tester' });
+// 저장한 계정으로 로그인하는 가짜 ensureLoggedIn: 로그인되면 세션도 살아난다.
+const renewing = holder => () => { holder.f.setSession(tester()); return tester(); };
+
+test('watchdog logs in again when the session expires and reopens the hidden player from the site progress', async () => {
+  const holder = {};
+  const f = holder.f = fixture({ login: renewing(holder), inspect: async (course, count) => playable(count === 1 ? firstLesson : secondLesson) });
+  await f.runner.startEnrolled(selection()); await flush(() => f.state.alphaRunner?.documentId != null);
+  assert.equal((await f.runner.heartbeat(f.message('playing'), f.sender())).active, true);
+  const { runId, playerToken } = f.state.alphaRunner;
+  f.setSession({ authenticated: false }); await f.runner.tick();
+  assert.equal(f.calls.login, 2, 'the saved account is used once more');
+  assert.equal(f.state.alphaRunner.running, true); assert.equal(f.state.alphaRunner.phase, 'loading');
+  assert.deepEqual(f.calls.navigate, [urlFor(firstLesson), urlFor(secondLesson)], 'the lesson is chosen again from the site record');
+  assert.equal(f.state.alphaRunner.runId, runId, 'the same run continues');
+  assert.notEqual(f.state.alphaRunner.playerToken, playerToken, 'the player opened with the expired login is replaced');
+  assert.deepEqual(f.state.alphaRunner.deferredCourses, []);
+  assert.equal(f.calls.enroll, 0); assert.equal(f.calls.notify.length, 0);
+  await f.runner.stop();
+});
+
+test('a login that cannot be renewed stops the run with the reason from the login', async () => {
+  for (const reason of ['알파 계정을 저장하거나 알파에서 먼저 로그인해 주세요.',
+    '다른 브라우저에서 접속 중입니다. 알파에서 중복 로그인 안내를 확인해 주세요.']) {
+    let expired = false;
+    const f = fixture({ login: async () => { if (expired) throw new Error(reason); return tester(); } });
+    await f.runner.startEnrolled(selection()); await flush(() => f.state.alphaRunner?.documentId != null);
+    expired = true; f.setSession({ authenticated: false }); await f.runner.tick();
     assert.equal(f.state.alphaRunner.phase, 'attention'); assert.equal(f.state.alphaRunner.running, false);
-    assert.ok(f.calls.hostPause > 0);
+    assert.match(f.state.alphaRunner.message, /로그인이 만료/); assert.ok(f.state.alphaRunner.message.includes(reason));
+    assert.equal(f.calls.login, 2); assert.equal(f.calls.navigate.length, 1); assert.ok(f.calls.hostPause > 0);
+    assert.deepEqual(f.state.alphaRunner.deferredCourses, [], 'an expired login never sets a course aside');
+    assert.equal(f.state.alphaRunner.courseIndex, 0); assert.equal(f.calls.notify.length, 1);
+    await f.runner.tick();
+    assert.equal(f.calls.login, 2, 'a stopped run does not try again');
   }
 });
-test('ended without saved progress waits and then requests attention without replaying', async () => {
-  const f = fixture(); await f.runner.start(selection()); await flush(() => f.calls.navigate.length > 0 && f.state.alphaRunner?.documentId != null);
+
+test('logging in again as a different account stops instead of playing', async () => {
+  let expired = false;
+  const f = fixture({ login: async () => expired ? { authenticated: true, loginId: 'someone-else' } : tester() });
+  await f.runner.startEnrolled(selection()); await flush(() => f.state.alphaRunner?.documentId != null);
+  expired = true; f.setSession({ authenticated: false }); await f.runner.tick();
+  assert.equal(f.state.alphaRunner.phase, 'attention'); assert.equal(f.state.alphaRunner.running, false);
+  assert.match(f.state.alphaRunner.message, /계정이 바뀌었습니다/);
+  assert.equal(f.calls.navigate.length, 1); assert.ok(f.calls.hostPause > 0);
+});
+
+test('automatic re-login is limited to three times in thirty minutes when the session keeps being cut', async () => {
+  const holder = {};
+  const f = holder.f = fixture({ login: renewing(holder) });
+  await f.runner.startEnrolled(selection()); await flush(() => f.state.alphaRunner?.documentId != null);
+  for (let count = 1; count <= 3; count++) {
+    f.advanceClock(30000); f.setSession({ authenticated: false }); await f.runner.tick();
+    assert.equal(f.calls.login, 1 + count); assert.equal(f.calls.navigate.length, 1 + count);
+    assert.equal(f.state.alphaRunner.running, true);
+  }
+  f.advanceClock(30000); f.setSession({ authenticated: false }); await f.runner.tick();
+  assert.equal(f.calls.login, 4, 'the account is not sent a fourth time');
+  assert.equal(f.state.alphaRunner.phase, 'attention'); assert.equal(f.state.alphaRunner.running, false);
+  assert.match(f.state.alphaRunner.message, /계속 끊깁니다/);
+  assert.equal(f.calls.navigate.length, 4); assert.deepEqual(f.state.alphaRunner.deferredCourses, []);
+  assert.equal(f.calls.notify.length, 1);
+});
+
+test('an occasional expiry keeps being renewed once the thirty-minute window has passed', async () => {
+  const holder = {};
+  const f = holder.f = fixture({ login: renewing(holder) });
+  await f.runner.startEnrolled(selection()); await flush(() => f.state.alphaRunner?.documentId != null);
+  for (let count = 1; count <= 6; count++) {
+    f.advanceClock(11 * 60 * 1000); f.setSession({ authenticated: false }); await f.runner.tick();
+    assert.equal(f.calls.login, 1 + count); assert.equal(f.state.alphaRunner.running, true);
+  }
+  await f.runner.stop();
+});
+
+test('a session that expires before or during a learning query is renewed and the course is queried again', async () => {
+  const first = selection().courseIds[0];
+  // 다음 강의로 넘어갈 때 만료를 발견한 경우
+  const before = {};
+  const ended = before.f = fixture({ login: renewing(before), inspect: async (course, count) => playable(count === 1 ? firstLesson : secondLesson) });
+  await ended.runner.startEnrolled(selection()); await flush(() => ended.state.alphaRunner?.documentId != null);
+  ended.setSession({ authenticated: false });
+  await ended.runner.heartbeat(ended.message('ended'), ended.sender());
+  await flush(() => ended.calls.navigate.length === 2);
+  assert.deepEqual(ended.calls.navigate, [urlFor(firstLesson), urlFor(secondLesson)]);
+  assert.equal(ended.calls.login, 2); assert.equal(ended.state.alphaRunner.running, true);
+  await ended.runner.stop();
+
+  // 조회하는 사이 만료된 경우: 조회가 값을 돌려주든 실패하든 그 결과는 쓰지 않는다.
+  for (const settle of [gate => gate.resolve(playable()), gate => gate.reject(new Error('알파 로그인을 다시 확인하세요.'))]) {
+    const gate = deferred(), holder = {};
+    const f = holder.f = fixture({ login: renewing(holder), inspect: (course, count) => count === 1 ? gate.promise : playable(secondLesson) });
+    await f.runner.startEnrolled(selection()); await flush(() => f.calls.inspect.length === 1);
+    f.setSession({ authenticated: false }); settle(gate);
+    await flush(() => f.calls.navigate.length === 1);
+    assert.deepEqual(f.calls.navigate, [urlFor(secondLesson)], 'the result read with the expired login is not used');
+    assert.deepEqual(f.calls.inspect, [first, first]); assert.equal(f.calls.login, 2);
+    assert.equal(f.state.alphaRunner.running, true); assert.deepEqual(f.state.alphaRunner.deferredCourses, []);
+    await f.runner.stop();
+  }
+});
+
+test('a learning query that fails while the login is still valid stops with the query error', async () => {
+  const f = fixture({ inspect: async () => { throw new Error('조회 연결이 끊겼습니다.'); } });
+  await f.runner.startEnrolled(selection()); await flush(() => f.state.alphaRunner?.phase === 'attention');
+  assert.match(f.state.alphaRunner.message, /조회 연결이 끊겼습니다/);
+  assert.equal(f.calls.login, 1); assert.equal(f.calls.inspect.length, 1); assert.equal(f.calls.navigate.length, 0);
+});
+test('ended without saved progress waits, then sets the course aside and plays the next course without replaying', async () => {
+  const ids = selection().courseIds;
+  const f = fixture({ inspect: async course => course.id === ids[0] ? playable() : playable(secondLesson) });
+  await f.runner.start(selection()); await flush(() => f.calls.navigate.length > 0 && f.state.alphaRunner?.documentId != null);
   await f.runner.heartbeat(f.message('ended'), f.sender());
   await flush(() => f.calls.inspect.length === 2 && f.state.alphaRunner.message.includes('진도 저장'));
   assert.equal(f.calls.navigate.length, 1); assert.equal(f.state.alphaRunner.running, true);
   f.advanceClock(91000); await f.runner.tick();
-  assert.equal(f.state.alphaRunner.phase, 'attention'); assert.equal(f.calls.navigate.length, 1);
-  assert.match(f.state.alphaRunner.message, /진도 저장/);
+  assert.deepEqual(f.calls.navigate, [urlFor(firstLesson), urlFor(secondLesson)], 'the unsaved lesson is not replayed');
+  assert.equal(f.state.alphaRunner.running, true); assert.equal(f.state.alphaRunner.courseId, ids[1]);
+  assert.deepEqual(f.state.alphaRunner.deferredCourses.map(item => [item.courseId, item.reason]), [[ids[0], 'unsaved']]);
+  assert.match(f.state.alphaRunner.deferredCourses[0].message, /진도 저장/);
+  assert.equal(f.calls.notify.length, 0);
+  await f.runner.stop();
 });
 test('worker restart never replays a login or enrollment request', async () => {
   for (const phase of ['login', 'enrolling', 'stopping']) {
@@ -326,16 +442,31 @@ test('confirming the final course survey reports done without replaying earlier 
   assert.match(f.calls.notify.at(-1)[0], /완료/);
 });
 
-test('survey continuation does not switch accounts or automatically log in', async () => {
-  for (const session of [{ authenticated: false }, { authenticated: true, loginId: 'someone-else' }]) {
-    const initial = surveyState(); const f = fixture({ initial }); f.setSession(session);
+test('survey continuation never switches accounts, and keeps the survey marker when an expired login cannot be renewed', async () => {
+  const reason = '알파 계정을 저장하거나 알파에서 먼저 로그인해 주세요.';
+  for (const [session, logins] of [[{ authenticated: false }, 1], [{ authenticated: true, loginId: 'someone-else' }, 0]]) {
+    const initial = surveyState(); const f = fixture({ initial, login: async () => { throw new Error(reason); } }); f.setSession(session);
     await f.runner.continueSurvey();
     await flush(() => f.calls.sessions > 0 && f.state.alphaRunner?.phase === 'attention');
     assert.equal(f.state.alphaRunner.attentionReason, 'survey');
     assert.equal(f.state.alphaRunner.courseIndex, initial.courseIndex);
     assert.equal(f.calls.inspect.length, 0); assert.equal(f.calls.navigate.length, 0);
-    assert.equal(f.calls.login, 0); assert.equal(f.calls.enroll, 0);
+    assert.equal(f.calls.login, logins, 'only an expired login is renewed'); assert.equal(f.calls.enroll, 0);
+    assert.equal(f.state.alphaRunner.message.includes(reason), logins === 1);
   }
+});
+
+test('survey continuation logs in again when the session has expired, then continues to the next course', async () => {
+  const initial = surveyState(2), holder = {};
+  const f = holder.f = fixture({ initial, login: renewing(holder), inspect: async course => course.id === initial.courseId
+    ? { status: 'completed' } : playable(secondLesson) });
+  f.setSession({ authenticated: false });
+  await f.runner.continueSurvey();
+  await flush(() => f.state.alphaRunner?.phase === 'loading' && f.calls.navigate.length === 1);
+  assert.deepEqual(f.calls.inspect, selection().courseIds.slice(2, 4));
+  assert.equal(f.state.alphaRunner.courseIndex, 3); assert.equal(f.state.alphaRunner.attentionReason, null);
+  assert.equal(f.calls.login, 1); assert.equal(f.calls.enroll, 0);
+  await f.runner.stop();
 });
 
 test('account change during survey confirmation prevents advancing the saved course index', async () => {
@@ -494,17 +625,68 @@ test('already completed enrollments are skipped and only verified completions en
   assert.equal(f.calls.navigate.length, 1); assert.equal(f.calls.enroll, 0);
 });
 
-test('unknown enrollment state or query failure stops instead of skipping or claiming completion', async () => {
+test('a query failure stops instead of skipping or claiming completion', async () => {
   const chosen = { ...selection(), courseIds: selection().courseIds.slice(0, 2) };
-  for (const result of [new Error('조회 실패'), { status: 'attention', message: '수강 상태 확인이 필요합니다.' }]) {
-    const f = fixture({ inspect: async () => { if (result instanceof Error) throw result; return result; } });
-    await f.runner.startEnrolled(chosen);
-    await flush(() => f.calls.inspect.length === 1 && f.state.alphaRunner?.phase === 'attention');
-    assert.equal(f.state.alphaRunner.running, false); assert.equal(f.state.alphaRunner.courseIndex, 0);
-    assert.deepEqual(f.state.alphaRunner.completedCourseIds, []); assert.deepEqual(f.state.alphaRunner.skippedCourses, []);
-    assert.equal(f.calls.navigate.length, 0); assert.equal(f.calls.enroll, 0);
-    assert.doesNotMatch(f.calls.notify.at(-1)[0], /완료/);
-  }
+  const f = fixture({ inspect: async () => { throw new Error('조회 실패'); } });
+  await f.runner.startEnrolled(chosen);
+  await flush(() => f.calls.inspect.length === 1 && f.state.alphaRunner?.phase === 'attention');
+  assert.equal(f.state.alphaRunner.running, false); assert.equal(f.state.alphaRunner.courseIndex, 0);
+  assert.deepEqual(f.state.alphaRunner.completedCourseIds, []); assert.deepEqual(f.state.alphaRunner.skippedCourses, []);
+  assert.equal(f.calls.navigate.length, 0); assert.equal(f.calls.enroll, 0);
+  assert.doesNotMatch(f.calls.notify.at(-1)[0], /완료/);
+});
+
+test('an unknown enrollment state is deferred until the other courses are checked, without claiming completion', async () => {
+  const chosen = { ...selection(), courseIds: selection().courseIds.slice(0, 2) };
+  const f = fixture({ inspect: async () => ({ status: 'attention', message: '수강 상태 확인이 필요합니다.' }) });
+  await f.runner.startEnrolled(chosen);
+  await flush(() => f.calls.inspect.length === 2 && f.state.alphaRunner?.phase === 'attention');
+  assert.equal(f.state.alphaRunner.running, false); assert.equal(f.state.alphaRunner.attentionReason, 'deferred');
+  assert.deepEqual(f.state.alphaRunner.completedCourseIds, []); assert.deepEqual(f.state.alphaRunner.skippedCourses, []);
+  assert.deepEqual(f.state.alphaRunner.deferredCourses.map(item => item.courseId), chosen.courseIds);
+  assert.equal(f.calls.navigate.length, 0); assert.equal(f.calls.enroll, 0);
+  assert.doesNotMatch(f.calls.notify.at(-1)[0], /완료/);
+  assert.doesNotMatch(f.state.alphaRunner.message, /수료를 사이트에서 확인/);
+});
+
+test('a course that cannot continue automatically does not stop the run: the other courses play first', async () => {
+  // 실제 사례(2026-11-13): 연구윤리 과정은 영상 4개 뒤에 인터랙티브 차시가 남아 실행이 거기서 멈췄다.
+  const ids = selection().courseIds;
+  const interactiveUrl = urlFor(secondLesson);
+  let firstCourseVideosDone = false;
+  const f = fixture({ inspect: async course => {
+    if (course.id === ids[0]) return firstCourseVideosDone
+      ? { status: 'attention', attentionReason: 'interactive', message: '인터랙티브 학습을 진행해 주세요.', url: interactiveUrl } : playable();
+    if (course.id === ids[1]) return playable(secondLesson);
+    return { status: 'attention', attentionReason: 'interactive', message: '인터랙티브 학습을 진행해 주세요.', url: interactiveUrl };
+  } });
+  await f.runner.startEnrolled(selection());
+  await flush(() => f.calls.navigate.length === 1 && f.state.alphaRunner?.documentId != null);
+  firstCourseVideosDone = true;
+  await f.runner.heartbeat(f.message('ended'), f.sender());
+  await flush(() => f.calls.navigate.length === 2);
+  assert.equal(f.state.alphaRunner.running, true, 'the run keeps going');
+  assert.equal(f.state.alphaRunner.courseId, ids[1], 'the next course with videos plays');
+  assert.deepEqual(f.calls.navigate, [urlFor(firstLesson), urlFor(secondLesson)]);
+  assert.deepEqual(f.state.alphaRunner.deferredCourses.map(item => [item.courseId, item.reason]), [[ids[0], 'interactive']]);
+  await f.runner.stop();
+
+  // 볼 수 있는 영상이 더 없으면 그때 한 번만 확인을 요청하고, 학습 화면 열기는 미뤄 둔 첫 과정의 차시를 연다.
+  const all = fixture({ inspect: async () => ({ status: 'attention', attentionReason: 'interactive', message: '인터랙티브 학습을 진행해 주세요.', url: interactiveUrl }) });
+  await all.runner.startEnrolled(selection());
+  await flush(() => all.state.alphaRunner?.phase === 'attention' && all.calls.notify.length === 1);
+  assert.equal(all.calls.inspect.length, 5); assert.equal(all.calls.navigate.length, 0);
+  assert.equal(all.state.alphaRunner.running, false); assert.equal(all.state.alphaRunner.attentionReason, 'deferred');
+  assert.equal(all.state.alphaRunner.courseId, ids[0]); assert.equal(all.state.alphaRunner.url, interactiveUrl);
+  assert.match(all.state.alphaRunner.message, /직접 진행할 과정 5개/);
+  assert.doesNotMatch(all.state.alphaRunner.message, /수료를 사이트에서 확인/);
+  assert.equal(all.calls.notify[0][0], '알파 자동 실행 확인 필요');
+  await all.runner.openPlayer();
+  assert.deepEqual(all.calls.manualNavigate, [interactiveUrl]);
+  // 직접 마친 뒤 다시 시도하면 처음부터 다시 확인한다.
+  assert.equal((await all.runner.retry()).ok, true);
+  await flush(() => all.calls.inspect.length === 10 && all.state.alphaRunner?.phase === 'attention' && all.calls.notify.length === 2);
+  assert.equal(all.state.alphaRunner.deferredCourses.length, 5);
 });
 
 test('survey continuation retains existing-enrollment mode for a subset', async () => {
@@ -721,17 +903,27 @@ test('a hidden player lost to an extension reload is reopened from the saved sit
   await f.runner.stop();
 });
 
-test('automatic reopening is limited, then asks for attention with the original reason', async () => {
+test('automatic reopening is limited, then the course is set aside with the original reason and the next course opens', async () => {
+  const ids = selection().courseIds;
   const f = fixture({ hostAlive: false, initial: lostPlayer() });
   for (let count = 1; count <= 3; count++) {
     await f.runner.tick();
     assert.equal(f.calls.navigate.length, count); assert.equal(f.state.alphaRunner.running, true);
+    assert.equal(f.state.alphaRunner.courseId, ids[0]);
     f.advanceClock(30000);
   }
   await f.runner.tick();
-  assert.equal(f.calls.navigate.length, 3);
-  assert.equal(f.state.alphaRunner.phase, 'attention'); assert.equal(f.state.alphaRunner.running, false);
-  assert.match(f.state.alphaRunner.message, /종료되었습니다/);
+  assert.equal(f.calls.navigate.length, 4, 'the next course is opened instead of stopping');
+  assert.equal(f.state.alphaRunner.running, true); assert.equal(f.state.alphaRunner.courseId, ids[1]);
+  assert.deepEqual(f.state.alphaRunner.deferredCourses.map(item => [item.courseId, item.reason]), [[ids[0], 'playback']]);
+  assert.match(f.state.alphaRunner.deferredCourses[0].message, /종료되었습니다/);
+  assert.equal(f.calls.notify.length, 0);
+  // 어느 과정도 재생되지 않으면 과정마다 같은 횟수만 시도한 뒤 한 번만 확인을 요청한다.
+  for (let count = 0; count < 40 && f.state.alphaRunner.running; count++) { f.advanceClock(30000); await f.runner.tick(); }
+  assert.equal(f.state.alphaRunner.phase, 'attention'); assert.equal(f.state.alphaRunner.attentionReason, 'deferred');
+  assert.equal(f.state.alphaRunner.running, false);
+  assert.deepEqual(f.state.alphaRunner.deferredCourses.map(item => item.courseId), ids);
+  assert.equal(f.calls.navigate.length, 19, 'three reopenings for the lost course, then one opening and three reopenings per course');
   assert.equal(f.calls.notify.length, 1);
 });
 
@@ -778,12 +970,13 @@ test('stop during automatic recovery prevents the player from reopening', async 
   assert.equal(f.state.alphaRunner.phase, 'stopped'); assert.equal(f.state.alphaRunner.running, false);
 });
 
-test('recovery that finds a manual step such as interactive content hands over instead of replaying', async () => {
+test('recovery that finds only manual steps such as interactive content hands over instead of replaying', async () => {
   const f = fixture({ hostAlive: false, initial: lostPlayer(),
     inspect: async () => ({ status: 'attention', attentionReason: 'interactive', message: '인터랙티브 학습을 진행해 주세요.' }) });
   await f.runner.tick();
   assert.equal(f.calls.navigate.length, 0);
-  assert.equal(f.state.alphaRunner.phase, 'attention'); assert.equal(f.state.alphaRunner.attentionReason, 'interactive');
+  assert.equal(f.state.alphaRunner.phase, 'attention'); assert.equal(f.state.alphaRunner.attentionReason, 'deferred');
+  assert.equal(f.state.alphaRunner.deferredCourses.length, 5); assert.equal(f.state.alphaRunner.running, false);
 });
 
 test('a course whose exam is left does not stop the run, and the exam is never taken automatically', async () => {
@@ -874,23 +1067,43 @@ test('repeated ready heartbeats cannot keep unstarted playback loading indefinit
   await f.runner.heartbeat(f.message('ready'), f.sender());
   await f.runner.tick();
   assert.equal(f.state.alphaRunner.phase, 'loading'); assert.equal(f.calls.navigate.length, 1);
-  // 1분 안에 재생이 시작되지 않으면 세 번까지 다시 열고, 그래도 안 되면 확인을 요청한다.
+  // 1분 안에 재생이 시작되지 않으면 세 번까지 다시 열고, 그래도 안 되면 그 과정을 미뤄 두고 다음 과정을 연다.
+  const ids = selection().courseIds;
   for (let count = 2; count <= 4; count++) {
     f.advanceClock(61000);
     await f.runner.heartbeat(f.message('ready'), f.sender());
     await f.runner.tick();
     assert.equal(f.calls.navigate.length, count); assert.equal(f.state.alphaRunner.phase, 'loading');
+    assert.equal(f.state.alphaRunner.courseId, ids[0]);
   }
   f.advanceClock(61000);
   await f.runner.heartbeat(f.message('ready'), f.sender());
   await f.runner.tick();
-  assert.equal(f.state.alphaRunner.phase, 'attention');
-  assert.equal(f.state.alphaRunner.running, false);
-  assert.match(f.state.alphaRunner.message, /다시 시도/);
-  await f.runner.retry();
   await flush(() => f.calls.navigate.length === 5 && f.state.alphaRunner.documentId);
+  assert.equal(f.state.alphaRunner.running, true); assert.equal(f.state.alphaRunner.courseId, ids[1]);
+  assert.deepEqual(f.state.alphaRunner.deferredCourses.map(item => item.courseId), [ids[0]]);
+  assert.match(f.state.alphaRunner.deferredCourses[0].message, /다시 시도/);
   assert.equal(f.calls.enroll, 0);
   assert.equal((await f.runner.heartbeat(f.message('playing'), f.sender())).active, true);
+  await f.runner.stop();
+});
+
+test('a classroom that asks for attention sets the course aside once and the next course plays', async () => {
+  const ids = selection().courseIds;
+  const f = fixture({ inspect: async course => course.id === ids[0] ? playable() : playable(secondLesson) });
+  await f.runner.startEnrolled(selection());
+  await flush(() => f.calls.navigate.length === 1 && f.state.alphaRunner?.documentId != null);
+  const message = { ...f.message('attention'), message: '재생할 영상을 찾지 못했습니다.' }, sender = f.sender();
+  // 같은 강의실에서 신호가 거듭 와도 과정은 한 번만 넘긴다.
+  assert.deepEqual(await f.runner.heartbeat(message, sender), { active: false });
+  await f.runner.heartbeat(message, sender);
+  await flush(() => f.calls.navigate.length === 2 && f.state.alphaRunner.documentId);
+  assert.deepEqual(f.calls.navigate, [urlFor(firstLesson), urlFor(secondLesson)]);
+  assert.equal(f.state.alphaRunner.running, true); assert.equal(f.state.alphaRunner.courseId, ids[1]);
+  assert.equal(f.state.alphaRunner.courseIndex, 1);
+  assert.deepEqual(f.state.alphaRunner.deferredCourses.map(item => [item.courseId, item.reason, item.message]),
+    [[ids[0], 'playback', '재생할 영상을 찾지 못했습니다.']]);
+  assert.equal(f.calls.notify.length, 0);
   await f.runner.stop();
 });
 

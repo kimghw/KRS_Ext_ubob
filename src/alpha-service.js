@@ -2,7 +2,7 @@
 var AlphaService = (() => {
   'use strict';
 
-  function create({ catalog, api, storage, tabs, windows }) {
+  function create({ catalog, api, storage, tabs, windows, classroom }) {
     let active = false;
     // 워커 종료 중 전송된 요청을 자동 재전송하지 않고 사이트에서 다시 확인한다.
     const ready = storage.get('alphaState').then(async ({ alphaState }) => {
@@ -137,12 +137,28 @@ var AlphaService = (() => {
       }
     }
 
+    const registrationOf = value => {
+      try {
+        const url = new URL(value);
+        return url.origin === catalog.BASE_URL && url.pathname === '/my/classRoom/classRoomDetail'
+          ? url.searchParams.get('registrationId') : null;
+      } catch { return null; }
+    };
+
     async function open({ courseId } = {}) {
       const course = courseId && catalog.courses.find(c => c.id === courseId);
       if (courseId && !course) throw new Error('첨부 목록의 알파캠퍼스 과정만 열 수 있습니다.');
-      const url = course ? course.url : `${catalog.BASE_URL}/login`;
+      // 신청한 과정은 교육탐색의 과정 소개가 아니라 내 강의실의 그 과정을 연다.
+      // 미신청·승인 대기이거나 수강 상태를 확인하지 못하면(로그인 실패 등) 과정 소개를 연다.
+      let room = null;
+      if (course && classroom) {
+        try { room = await classroom(course); } catch { /* 과정 소개를 연다 */ }
+      }
+      const registrationId = registrationOf(room);
+      const url = registrationId ? room : course ? course.url : `${catalog.BASE_URL}/login`;
+      // 같은 과정의 강의실이 이미 열려 있으면 어느 차시를 보고 있든 그 탭으로 간다.
       const existing = (await tabs.query({ url: `${catalog.BASE_URL}/*` }))
-        .find(tab => tab.url === url);
+        .find(tab => tab.url === url || (registrationId && registrationOf(tab.url) === registrationId));
       if (existing) {
         await tabs.update(existing.id, { active: true });
         if (windows && existing.windowId != null) await windows.update(existing.windowId, { focused: true });

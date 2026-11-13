@@ -27,6 +27,7 @@
   let requestNumber = 0;
 
   window.addEventListener('message', event => {
+    if (event.origin === EMBED_ORIGIN) { embedMessage(event); return; }
     if (event.source !== window.parent || event.origin !== EXTENSION_ORIGIN ||
         event.data?.tag !== TAG || event.data.type !== 'response') return;
     const resolve = waiting.get(event.data.requestId);
@@ -154,10 +155,109 @@
     return null;
   }
 
+  // 저작도구 차시(유형 15, 사이트 표기 "인터랙티브")는 강의실이 다른 출처(make.alpha-campus.kr)의 플레이어 프레임을 띄운다.
+  // 실제 값(2026-11-13): 영상 파일 하나를 감싼 플레이어이고, 상호작용은 영상 끝의 링크·이미지뿐이다.
+  // 그 프레임의 alpha-embed-player.js가 <video> 상태를 알려 주고 재생·정지 요청만 받는다. 진도는 사이트가 기록한다.
+  const EMBED_ORIGIN = 'https://make.alpha-campus.kr';
+  const EMBED_PATH = '/bubble/embed/';
+  const EMBED_TAG = 'alpha-embed-player';
+  const embeds = new WeakMap();
+
+  function embedFrames() {
+    return [...document.querySelectorAll('iframe')].filter(frame => {
+      try {
+        const url = new URL(frame.getAttribute('src') || '', location.href);
+        return url.origin === EMBED_ORIGIN && url.pathname.startsWith(EMBED_PATH);
+      } catch { return false; }
+    });
+  }
+
+  // 사이트는 이 차시의 진도를 실제로 본 구간의 합으로 계산하고, 다시 열면 마지막으로 본 위치에서 이어 재생한다.
+  // 그 앞에 보지 않은 구간이 남아 있으면 끝까지 봐도 완료되지 않으므로, 아직 보지 않은 첫 지점(초)을 찾아 거기서부터 본다.
+  // segments: 사이트 플레이어가 알려 주는 "시작[.]끝[,]시작[.]끝" 형식. 모두 봤거나 길이를 모르면 null.
+  function firstUnwatched(segments, duration) {
+    if (!(duration > 0)) return null;
+    const pairs = String(segments || '').split('[,]').map(item => item.split('[.]').map(Number))
+      .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end > start)
+      .sort((one, two) => one[0] - two[0]);
+    let covered = 0;
+    for (const [start, end] of pairs) {
+      if (start > covered + 2) break;
+      covered = Math.max(covered, end);
+    }
+    return duration - covered > 2 ? Math.floor(covered) : null;
+  }
+
+  function embedEntry(frame) {
+    let entry = embeds.get(frame);
+    if (!entry) {
+      let attempts = 0;
+      let started = false;
+      const send = (command, extra) => {
+        try { frame.contentWindow.postMessage({ tag: EMBED_TAG, type: 'command', command, ...extra }, EMBED_ORIGIN); }
+        catch { /* 프레임이 닫히는 중 */ }
+      };
+      entry = { tracking: false, watched: '', state: null, listeners: [], player: {
+        sitePlayer: true,
+        // 플레이어 스크립트와 이전 학습 상태를 불러오는 데 일반 영상보다 오래 걸린다.
+        loadTimeout: 50000,
+        getAttribute: () => '',
+        update() {
+          const state = entry.state;
+          // 사이트가 진도 추적을 연결하기 전에 재생하면 그 재생은 진도에 남지 않으므로, 준비 신호를 받을 때까지 기다린다.
+          const ready = entry.tracking && !!state?.source;
+          this.currentSrc = ready ? 'embed-player' : '';
+          this.readyState = ready ? Number(state.readyState) || 0 : 0;
+          this.paused = state?.paused !== false;
+          this.ended = state?.ended === true;
+          this.currentTime = Number(state?.currentTime) || 0;
+          this.duration = Number(state?.duration) || 0;
+          this.error = state?.error ? { message: String(state.error).slice(0, 120) } : null;
+          if (state && state.paused === false) started = true;
+          return this;
+        },
+        addEventListener(type, listener) { if (type === 'ended' || type === 'error') entry.listeners.push({ type, listener }); },
+        set muted(value) { send(value ? 'mute' : 'unmute'); },
+        set playbackRate(_) { send('rate'); },
+        // 요청이 플레이어 준비보다 먼저 도착해 버려질 수 있어, 재생이 시작되기 전까지만 몇 번 다시 요청한다.
+        canRetryPlay: () => !started && attempts < 3,
+        async play() { attempts++; send('play', { from: firstUnwatched(entry.watched, Number(entry.state?.duration) || 0) }); },
+        pause() { send('pause'); },
+      } };
+      embeds.set(frame, entry);
+    }
+    return entry;
+  }
+
+  function embedMessage(event) {
+    const frame = embedFrames().find(item => item.contentWindow === event.source);
+    if (!frame) return;
+    const entry = embedEntry(frame);
+    // loadedState는 사이트 플레이어가 강의실에 보내는 신호로, 진도 추적 연결이 끝났다는 뜻이다.
+    if (event.data?.type === 'loadedState') {
+      entry.tracking = true;
+      entry.watched = typeof event.data.state?.played_segments === 'string' ? event.data.state.played_segments : '';
+      return;
+    }
+    if (event.data?.tag !== EMBED_TAG || event.data.type !== 'state') return;
+    const before = entry.state;
+    entry.state = event.data;
+    // 종료·오류는 다음 확인 주기를 기다리지 않고 바로 알린다.
+    for (const type of ['ended', 'error']) {
+      if (!event.data[type] || before?.[type]) continue;
+      for (const item of entry.listeners) if (item.type === type) item.listener();
+    }
+  }
+
+  function embedPlayer() {
+    const frame = embedFrames()[0];
+    return frame ? embedEntry(frame).player.update() : null;
+  }
+
   function findMedia() {
     const element = mediaIn(document);
     if (element && hasSource(element)) return element;
-    return sitePlayerIn(document) || element;
+    return sitePlayerIn(document) || embedPlayer() || element;
   }
 
   // 영상을 찾지 못한 이유를 좁히기 위한 구조 요약. 주소의 식별자와 화면 본문은 담지 않는다.
@@ -187,6 +287,8 @@
           label = internal ? url.pathname : url.hostname || url.protocol;
         } catch { /* 주소를 읽을 수 없는 프레임 */ }
         const inner = sameOriginDocument(frame);
+        const embed = embeds.get(frame);
+        if (embed) { frames.push(`${label}(저작도구 플레이어 응답 ${embed.state ? '있음' : '없음'}, 진도 추적 ${embed.tracking ? '연결됨' : '대기'})`); continue; }
         if (!inner) { frames.push(`${label}(${!internal ? '외부' : reopened ? '다시 열어도 열리지 않음' : '열리지 않음'})`); continue; }
         const state = askSitePlayer(inner, 'state');
         frames.push(`${label}(${state ? `플레이어 ${state.tech || '준비 중'}`
@@ -246,8 +348,10 @@
     if (media.error) return { kind: 'attention', message: media.sitePlayer && media.error.message
       ? `영상 재생에 오류가 발생했습니다(${media.error.message}). 알파 강의실을 확인하세요.`
       : '영상 재생에 오류가 발생했습니다. 알파 강의실을 확인하세요.' };
-    if (!hasSource(media)) return Date.now() - startedAt > 30000
-      ? { kind: 'attention', message: '영상 플레이어는 열렸지만 영상 파일을 불러오지 못했습니다. 학습 화면에서 로딩 상태를 확인하세요.' }
+    if (!hasSource(media)) return Date.now() - startedAt > (media.loadTimeout || 30000)
+      ? { kind: 'attention', message: media.loadTimeout
+        ? `저작도구 플레이어가 준비되지 않았습니다. 알파 강의실을 확인하세요. (진단: ${diagnose()})`.slice(0, 290)
+        : '영상 플레이어는 열렸지만 영상 파일을 불러오지 못했습니다. 학습 화면에서 로딩 상태를 확인하세요.' }
       : { kind: 'ready' };
     return { kind: media.paused ? (ownedMedia ? 'paused' : 'ready') : 'playing' };
   }

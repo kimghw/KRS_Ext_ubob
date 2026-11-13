@@ -33,7 +33,7 @@ function sitePlayerDocument(state, { startsOnPlay = true } = {}) {
 
 function setup({ active = true, wrongLesson = false, dialog = false, failPlay = false, iframe = false, loading = false,
   embedded = true, ancestorOrigin = 'chrome-extension://extension-id', playerDocument = null, emptyFrame = false,
-  blockedFrame = false } = {}) {
+  blockedFrame = false, embed = false } = {}) {
   let clock = 1000000;
   const events = {};
   const media = {
@@ -68,10 +68,21 @@ function setup({ active = true, wrongLesson = false, dialog = false, failPlay = 
       this.contentWindow = { location: { origin: url.origin } };
     },
   };
+  // embed: 저작도구 차시의 플레이어 프레임. 출처가 달라 문서에는 닿지 못하고 메시지만 주고받는다.
+  const embedCommands = [], embedStarts = [];
+  const embedWindow = { postMessage(message, targetOrigin) {
+    assert.equal(targetOrigin, 'https://make.alpha-campus.kr');
+    assert.equal(message.tag, 'alpha-embed-player'); assert.equal(message.type, 'command');
+    embedCommands.push(message.command);
+    if (message.command === 'play') embedStarts.push(message.from);
+  } };
+  const embedFrame = { contentDocument: null, contentWindow: embedWindow,
+    getAttribute(name) { return name === 'src' ? 'https://make.alpha-campus.kr/bubble/embed/281' : null; },
+    get src() { return this.getAttribute('src'); } };
   const document = {
     querySelectorAll(selector) {
-      if (selector === 'video, audio') return framed ? [] : [media];
-      if (selector === 'iframe') return framed ? [frame] : [];
+      if (selector === 'video, audio') return framed || embed ? [] : [media];
+      if (selector === 'iframe') return embed ? [embedFrame] : framed ? [frame] : [];
       return dialog ? [{ getClientRects: () => [1], getAttribute: () => null }] : [];
     },
   };
@@ -103,7 +114,9 @@ function setup({ active = true, wrongLesson = false, dialog = false, failPlay = 
     } },
   };
   vm.runInNewContext(source, context);
-  return { media, events, calls, opened, tick: () => interval?.(), advanceClock: ms => { clock += ms; },
+  const embedPlayer = { commands: embedCommands, starts: embedStarts,
+    send: (data, source = embedWindow, origin = 'https://make.alpha-campus.kr') => windowEvents.message({ source, origin, data }) };
+  return { media, events, calls, opened, embed: embedPlayer, tick: () => interval?.(), advanceClock: ms => { clock += ms; },
     stop: (senderId = 'extension-id') => listener?.({ type: 'alpha-player-stop' }, { id: senderId }, () => {}) };
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -294,4 +307,100 @@ test('a classroom without any player reports what the hidden page contains', asy
   assert.match(h.calls.at(-1).message, /재생할 영상을 찾지 못했습니다/);
   assert.match(h.calls.at(-1).message, /진단: .*프레임 \/catenoid\.html\(플레이어 없음\)/);
   assert.ok(h.calls.at(-1).message.length <= 290);
+});
+
+// 저작도구 차시(유형 15): 다른 출처의 플레이어 프레임이 알려 주는 상태로 재생을 제어한다.
+const embedState = (overrides = {}) => ({ tag: 'alpha-embed-player', type: 'state', ready: true, source: true, readyState: 4,
+  paused: true, ended: false, currentTime: 0, duration: 1774, error: '', ...overrides });
+
+test('an authoring-tool lesson waits for the site progress tracker, then is muted and played through its frame', async () => {
+  const h = setup({ embed: true });
+  await settle();
+  assert.deepEqual(h.embed.commands, [], 'nothing is commanded before the frame answers');
+  assert.equal(h.calls.at(-1).kind, 'ready');
+  h.embed.send(embedState());
+  await h.tick();
+  assert.deepEqual(h.embed.commands, [], 'playing before tracking is connected would not be recorded by the site');
+  h.embed.send({ type: 'loadedState', state: {} });
+  await h.tick();
+  assert.deepEqual(h.embed.commands, ['mute', 'rate', 'play']);
+  assert.equal(h.media.plays, 0, 'no classroom element is touched');
+  h.embed.send(embedState({ paused: false, currentTime: 12 }));
+  await h.tick();
+  assert.equal(h.calls.at(-1).kind, 'playing');
+  assert.equal(h.calls.at(-1).currentTime, 12); assert.equal(h.calls.at(-1).duration, 1774);
+  assert.equal(h.embed.commands.filter(command => command === 'play').length, 1, 'a playing video is not restarted');
+});
+
+test('an authoring-tool lesson reports its end at once, and stop pauses it', async () => {
+  const h = setup({ embed: true });
+  await settle();
+  h.embed.send({ type: 'loadedState', state: {} });
+  h.embed.send(embedState());
+  await h.tick();
+  h.embed.send(embedState({ paused: false, currentTime: 5 }));
+  await h.tick();
+  const before = h.calls.length;
+  h.embed.send(embedState({ paused: true, ended: true, currentTime: 1774 }));
+  await settle();
+  assert.ok(h.calls.length > before, 'the end does not wait for the next check');
+  assert.equal(h.calls.at(-1).kind, 'ended'); assert.equal(h.calls.at(-1).currentTime, 1774);
+  h.stop();
+  assert.equal(h.embed.commands.at(-1), 'pause');
+});
+
+test('an authoring-tool frame that stays paused is asked to play a few times, and its error is handed over', async () => {
+  const h = setup({ embed: true });
+  await settle();
+  h.embed.send({ type: 'loadedState', state: {} });
+  h.embed.send(embedState());
+  for (let i = 0; i < 6; i++) await h.tick();
+  assert.equal(h.embed.commands.filter(command => command === 'play').length, 3);
+  h.embed.send(embedState({ error: '자동 재생이 허용되지 않았습니다' }));
+  await settle();
+  assert.equal(h.calls.at(-1).kind, 'attention');
+  assert.match(h.calls.at(-1).message, /자동 재생이 허용되지 않았습니다/);
+});
+
+test('messages that do not come from the lesson frame, and an unauthorized run, never control it', async () => {
+  const h = setup({ embed: true });
+  await settle();
+  // 같은 출처라도 강의실에 없는 창에서 온 메시지와, 다른 출처에서 온 메시지는 무시한다.
+  h.embed.send({ type: 'loadedState', state: {} }, { postMessage() {} });
+  h.embed.send(embedState(), { postMessage() {} });
+  h.embed.send({ type: 'loadedState', state: {} }, undefined, 'https://other.example');
+  await h.tick();
+  assert.deepEqual(h.embed.commands, []);
+  assert.equal(h.calls.at(-1).kind, 'ready');
+
+  const other = setup({ embed: true, wrongLesson: true });
+  await settle();
+  other.embed.send({ type: 'loadedState', state: {} });
+  other.embed.send(embedState());
+  await other.tick();
+  assert.deepEqual(other.embed.commands, []);
+});
+
+test('an authoring-tool frame that never becomes ready is reported with what was seen', async () => {
+  const h = setup({ embed: true });
+  await settle();
+  h.embed.send(embedState());
+  h.advanceClock(51000);
+  await h.tick();
+  assert.equal(h.calls.at(-1).kind, 'attention');
+  assert.match(h.calls.at(-1).message, /저작도구 플레이어가 준비되지 않았습니다/);
+  assert.match(h.calls.at(-1).message, /응답 있음, 진도 추적 대기/);
+});
+
+test('an authoring-tool lesson starts from the first part the site has not recorded as watched', async () => {
+  // 실제 사례(2026-11-13): 사이트는 17분 28초에서 이어 재생했지만 앞부분은 본 기록이 없어 끝까지 봐도 완료되지 않는다.
+  for (const [watched, from] of [['', 0], ['1048[.]1300.5', 0], ['0[.]500.2[,]499[.]900.7', 900], ['900[.]1774.4[,]0[.]901', null],
+    ['0[.]1773', null], ['깨진 값', 0]]) {
+    const h = setup({ embed: true });
+    await settle();
+    h.embed.send({ type: 'loadedState', state: { played_segments: watched } });
+    h.embed.send(embedState({ duration: 1774.4 }));
+    await h.tick();
+    assert.deepEqual(h.embed.starts, [from], watched);
+  }
 });

@@ -178,13 +178,26 @@ test('a not-completed registration keeps playing within its study period, like t
   }
 });
 
-test('interactive or unknown content is handed off instead of pretending to finish it', () => {
+test('an authoring-tool ("interactive") lesson is a lecture video and is played like one', () => {
+  // 실제 알파 값(2026-11-13): 유형 15는 영상 파일 하나를 저작도구 플레이어로 감싼 강의다.
   const reg = registration();
-  reg.sequence.modules[0].lessons = [lesson(lid, 15)];
+  reg.sequence.modules[0].lessons = [lesson(surveyId, 12), lesson(otherRid, 2, [studied(true, 100)]), lesson(lid, 15)];
+  const result = parseRegistration(course, reg);
+  assert.equal(result.status, 'ready');
+  assert.equal(result.nextLesson.id, lid); assert.equal(result.nextLesson.type, 15);
+  assert.equal(new URL(result.url).searchParams.get('sequenceLessonId'), lid);
+  // 다 보면 일반 영상처럼 설문만 남은 상태가 된다.
+  reg.sequence.modules[0].lessons[2].myStudies = [studied(true, 100)];
+  assert.equal(parseRegistration(course, reg).attentionReason, 'survey');
+});
+
+test('unknown content is handed off instead of pretending to finish it', () => {
+  const reg = registration();
+  reg.sequence.modules[0].lessons = [lesson(lid, 99)];
   const result = parseRegistration(course, reg);
   assert.equal(result.status, 'attention');
   assert.equal(result.nextLesson, null);
-  assert.equal(result.attentionReason, 'interactive');
+  assert.equal(result.attentionReason, 'completion');
 });
 
 test('survey attention requires completed video and only unfinished survey content', () => {
@@ -200,8 +213,8 @@ test('survey attention requires completed video and only unfinished survey conte
   assert.equal(parseRegistration(course, reg).attentionReason, 'survey');
 });
 
-test('unfinished exams, reports and interactive content prevent a final-survey indicator', () => {
-  for (const [type, reason] of [[10, 'assessment'], [11, 'assessment'], [15, 'interactive'], [99, 'completion']]) {
+test('unfinished exams, reports and unknown content prevent a final-survey indicator', () => {
+  for (const [type, reason] of [[10, 'assessment'], [11, 'assessment'], [99, 'completion']]) {
     const reg = registration();
     reg.sequence.modules[0].lessons[1].myStudies = [studied(true, 100)];
     reg.sequence.modules[0].lessons.push(lesson(otherRid, type));
@@ -258,4 +271,27 @@ test('missing enrollment never queries or creates a classroom study', async () =
   } });
   assert.equal((await client.inspect(course)).status, 'not-enrolled');
   assert.equal(requests, 1);
+});
+
+test('a course click opens the enrolled classroom and falls back when there is none', () => {
+  const { courseRoomUrl } = require('../src/alpha-learning.js');
+  // 영상이 남은 과정: 다음 차시가 아니라 과정의 강의실.
+  assert.equal(courseRoomUrl(parseRegistration(course, registration())), classroomUrl(rid));
+  // 설문만 남은 과정: 직접 진행할 그 차시.
+  const surveyLeft = registration();
+  surveyLeft.sequence.modules[0].lessons[1].myStudies = [studied(true, 100)];
+  const survey = parseRegistration(course, surveyLeft);
+  assert.equal(survey.attentionReason, 'survey');
+  assert.equal(courseRoomUrl(survey), classroomUrl(rid, surveyId));
+  // 수료한 과정도 강의실로 연다.
+  assert.equal(courseRoomUrl(parseRegistration(course, { ...registration(), status: 'COMPLETED' })), classroomUrl(rid));
+  // 승인 대기·미신청·일치하지 않는 등록·형식이 다른 값은 강의실로 열지 않는다.
+  assert.equal(courseRoomUrl(parseRegistration(course, { ...registration(), status: 'REQUESTED' })), null);
+  assert.equal(courseRoomUrl({ status: 'not-enrolled', registrationId: null, url: course.url }), null);
+  const mismatched = registration();
+  mismatched.sequence.subject.id = otherRid;
+  assert.equal(courseRoomUrl(parseRegistration(course, mismatched)), null);
+  assert.equal(courseRoomUrl({ status: 'attention', registrationId: rid, url: classroomUrl(otherRid) }), null);
+  assert.equal(courseRoomUrl({ status: 'attention', registrationId: rid, url: 'https://example.com/my/classRoom/classRoomDetail' }), null);
+  assert.equal(courseRoomUrl(null), null);
 });

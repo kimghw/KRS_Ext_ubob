@@ -12,7 +12,7 @@
     "128": "icons/icon128.png"
   },
   "permissions": ["storage", "notifications", "offscreen", "alarms", "declarativeNetRequestWithHostAccess", "sidePanel", "cookies", "downloads", "scripting", "nativeMessaging"],
-  "host_permissions": ["https://*.ubob.com/*", "https://*.runningplus.net/*", "https://alpha-campus.kr/*", "https://report.alpha-campus.kr/*"],
+  "host_permissions": ["https://*.ubob.com/*", "https://*.runningplus.net/*", "https://alpha-campus.kr/*", "https://report.alpha-campus.kr/*", "https://make.alpha-campus.kr/*"],
   "side_panel": {
     "default_path": "popup/popup.html?surface=sidepanel"
   },
@@ -39,6 +39,12 @@
       "run_at": "document_idle",
       "all_frames": true,
       "world": "MAIN"
+    },
+    {
+      "matches": ["https://make.alpha-campus.kr/bubble/embed/*"],
+      "js": ["src/alpha-embed-player.js"],
+      "run_at": "document_idle",
+      "all_frames": true
     },
     {
       "matches": ["https://*.ubob.com/*"],

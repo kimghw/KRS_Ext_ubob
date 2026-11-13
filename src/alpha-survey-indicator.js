@@ -44,7 +44,9 @@ var AlphaSurveyIndicator = (() => {
     function update(state) {
       // 설문 확인 대기 중이거나, 영상 학습은 끝났는데 설문이 남은 과정이 있을 때 표시한다.
       const waiting = ['attention', 'checking-survey'].includes(state?.phase) && state.attentionReason === 'survey';
-      const left = state?.phase === 'done' ? (state.surveyCourses || []).length : 0;
+      // 미뤄 둔 과정 때문에 확인 요청으로 끝난 실행도 영상 학습은 끝난 상태다.
+      const finished = state?.phase === 'done' || (state?.phase === 'attention' && state.attentionReason === 'deferred');
+      const left = finished ? (state.surveyCourses || []).length : 0;
       const survey = waiting || left > 0;
       const title = waiting
         ? `설문 작성 필요${state.courseTitle ? ` · ${state.courseTitle}` : ''} — 알파 탭에서 자동 설문을 누르세요`

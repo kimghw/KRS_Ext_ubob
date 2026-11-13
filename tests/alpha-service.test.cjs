@@ -256,3 +256,53 @@ test('stop during a sent request verifies it and prevents later enrollment', asy
   assert.equal(h.db.alphaState.items[0].status, 'enrolled');
   assert.equal(h.db.alphaState.busy, false);
 });
+
+// ---------- 과정 열기: 신청한 과정은 내 강의실, 아니면 교육탐색의 과정 소개 ----------
+function openHarness({ classroom, open = [] } = {}) {
+  const calls = { created: [], activated: [], focused: [], classroom: [] };
+  const tabs = {
+    async query() { return open.map((url, index) => ({ id: index + 1, windowId: 7, url })); },
+    async create(options) { calls.created.push(options.url); },
+    async update(id, options) { calls.activated.push([id, options]); },
+  };
+  const windows = { async update(id, options) { calls.focused.push([id, options]); } };
+  const service = create({ catalog, api: {}, storage: { async get() { return {}; }, async set() {} }, tabs, windows,
+    classroom: classroom && (async course => { calls.classroom.push(course.id); return classroom(course); }) });
+  return { service, calls };
+}
+const openCourse = catalog.courses[1];
+const room = 'https://alpha-campus.kr/my/classRoom/classRoomDetail?registrationId=12345678-1234-1234-1234-123456789012&type=ONLINE';
+
+test('an enrolled course opens its classroom instead of the explore page', async () => {
+  const h = openHarness({ classroom: () => room });
+  await h.service.open({ courseId: openCourse.id });
+  assert.deepEqual(h.calls.classroom, [openCourse.id]);
+  assert.deepEqual(h.calls.created, [room]);
+});
+
+test('courses without a classroom, failed lookups and untrusted answers open the explore page', async () => {
+  for (const classroom of [() => null, () => { throw new Error('알파 로그인을 다시 확인하세요.'); },
+    () => 'https://example.com/my/classRoom/classRoomDetail?registrationId=x', () => `${catalog.BASE_URL}/explore/other`, undefined]) {
+    const h = openHarness({ classroom });
+    await h.service.open({ courseId: openCourse.id });
+    assert.deepEqual(h.calls.created, [openCourse.url]);
+  }
+});
+
+test('an open classroom tab of the same course is focused whatever lesson it shows', async () => {
+  const other = room.replace('123456789012', '999999999999');
+  const h = openHarness({ classroom: () => room,
+    open: [openCourse.url, other, `${room}&sequenceLessonId=11111111-1111-1111-1111-111111111111`] });
+  await h.service.open({ courseId: openCourse.id });
+  assert.deepEqual(h.calls.created, []);
+  assert.deepEqual(h.calls.activated, [[3, { active: true }]]);
+  assert.deepEqual(h.calls.focused, [[7, { focused: true }]]);
+});
+
+test('opening without a course never looks up a classroom and unknown courses are refused', async () => {
+  const h = openHarness({ classroom: () => room });
+  await h.service.open();
+  assert.deepEqual(h.calls.classroom, []);
+  assert.deepEqual(h.calls.created, [`${catalog.BASE_URL}/login`]);
+  await assert.rejects(h.service.open({ courseId: 'unknown' }), /첨부 목록/);
+});

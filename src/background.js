@@ -25,6 +25,11 @@ const alpha = AlphaService.create({
   storage: chrome.storage.local,
   tabs: chrome.tabs,
   windows: chrome.windows,
+  // 과정을 누르면 신청한 과정은 내 강의실의 그 과정으로 연다(저장된 계정으로 먼저 로그인해 둔다).
+  classroom: async course => {
+    await alphaAuth.ensureLoggedIn();
+    return AlphaLearning.courseRoomUrl(await alphaLearning.inspect(course));
+  },
 });
 const alphaLearning = AlphaLearning.createClient({ getCsrfToken: alphaCsrfToken });
 const alphaCertificates = AlphaCertificates.create({
