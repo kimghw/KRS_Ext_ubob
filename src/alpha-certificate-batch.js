@@ -30,6 +30,8 @@ var AlphaCertificateBatch = (() => {
     });
     // 초기 저장소 오류는 public 메서드 호출 시 전달하되, 그 전까지 미처리 거부가 되지 않게 한다.
     ready.catch(() => {});
+    // 올해(한국 시간)에 신청한 수료 과정만 받는다. 지난 연도까지 모두 받으면 너무 많다.
+    const koreaYear = () => new Date(now() + 9 * 3600e3).getUTCFullYear();
     const current = (runId, version) => state.runId === runId && state.busy && stopVersion === version;
     async function checkAccount(loginId) {
       const session = await api.session();
@@ -65,11 +67,11 @@ var AlphaCertificateBatch = (() => {
       if (shouldStop()) return;
       await checkAccount(loginId);
       if (shouldStop()) return;
-      const listed = await list.listCompleted({ loginId, shouldStop, onPage: async progress => {
+      const listed = await list.listCompleted({ loginId, year: state.year, shouldStop, onPage: async progress => {
         if (shouldStop() || state.phase !== 'listing') return;
         if (Number.isInteger(progress?.scanned) && progress.scanned >= 0) state.scanned = Math.max(state.scanned, progress.scanned);
         if (Number.isInteger(progress?.total) && progress.total >= 0) state.total = progress.total;
-        state.message = `전체 수료 이력을 조회하고 있습니다. ${state.scanned}개 확인`;
+        state.message = `수료 이력에서 ${state.year}년 신청 과정을 찾고 있습니다. ${state.scanned}개 확인`;
         await save();
       } });
       if (shouldStop()) return;
@@ -116,7 +118,7 @@ var AlphaCertificateBatch = (() => {
       state = { ...state, busy: false, phase: 'done', currentTitle: '',
         message: state.total
           ? `수료증 ${state.total}개 처리 · 저장 완료 ${complete}개 · 다운로드 중 ${downloading}개 · 확인 필요 ${failed}개`
-          : '현재 계정의 수료한 교육이 없습니다.' };
+          : `${state.year}년에 수강한 강의 중 수료한 교육이 없습니다.` };
       await save();
     }
     async function start() {
@@ -126,9 +128,9 @@ var AlphaCertificateBatch = (() => {
       if (starting || job || state.busy) throw new Error('전체 수료증 저장 작업이 진행 중입니다.');
       starting = true;
       try {
-        const runId = id();
-        state = { busy: true, phase: 'listing', runId, loginId: null, scanned: 0, total: 0,
-          processed: 0, currentTitle: '', items: [], message: '현재 계정의 전체 수료 이력을 조회합니다.', updatedAt: now() };
+        const runId = id(), year = koreaYear();
+        state = { busy: true, phase: 'listing', runId, year, loginId: null, scanned: 0, total: 0,
+          processed: 0, currentTitle: '', items: [], message: `${year}년에 수강한 강의의 수료 이력을 조회합니다.`, updatedAt: now() };
         const initial = save();
         let running;
         running = initial.then(() => run(runId, version)).catch(async error => {
@@ -146,7 +148,7 @@ var AlphaCertificateBatch = (() => {
         }).catch(() => {});
         job = running;
         await initial;
-        return { ok: true, message: '전체 수료증 저장을 시작했습니다.' };
+        return { ok: true, message: `${year}년 수강한 강의의 수료증 저장을 시작했습니다.` };
       } finally { starting = false; }
     }
     async function stop() {

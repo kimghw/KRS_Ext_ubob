@@ -90,7 +90,7 @@ async function alphaManual(action) {
   alphaManualPending = true;
   try {
     await alphaCertificateBatch.ready;
-    if (await alphaCertificateBatch.isBusy()) throw new Error('전체 수료증 받기가 진행 중입니다. 완료하거나 수료증 받기를 중지한 뒤 다시 시도하세요.');
+    if (await alphaCertificateBatch.isBusy()) throw new Error('올해 수료증 받기가 진행 중입니다. 완료하거나 수료증 받기를 중지한 뒤 다시 시도하세요.');
     const { alphaRunner: runner, alphaState } = await chrome.storage.local.get(['alphaRunner', 'alphaState']);
     if (runner?.running) throw new Error('알파 자동 실행을 먼저 중지하세요.');
     if (runner?.cleanupPending) throw new Error('숨겨진 알파 플레이어의 중지를 먼저 완료하세요.');
@@ -103,7 +103,7 @@ async function alphaLaunch(action) {
   alphaLaunchPending = true;
   try {
     await alphaCertificateBatch.ready;
-    if (await alphaCertificateBatch.isBusy()) throw new Error('전체 수료증 받기가 진행 중입니다. 완료하거나 수료증 받기를 중지한 뒤 다시 시도하세요.');
+    if (await alphaCertificateBatch.isBusy()) throw new Error('올해 수료증 받기가 진행 중입니다. 완료하거나 수료증 받기를 중지한 뒤 다시 시도하세요.');
     return await action();
   } finally { alphaLaunchPending = false; }
 }
@@ -137,7 +137,7 @@ async function alphaCourseAction(msg, action) {
   alphaCoursePending = true;
   try {
     await alphaCertificateBatch.ready;
-    if (await alphaCertificateBatch.isBusy()) throw new Error('전체 수료증 받기가 끝난 뒤 다시 시도하세요.');
+    if (await alphaCertificateBatch.isBusy()) throw new Error('올해 수료증 받기가 끝난 뒤 다시 시도하세요.');
     const user = await alphaAuth.ensureLoggedIn();
     const result = await action(course, user);
     // 조회와 제출 사이에 계정이 바뀌었다면 결과를 다른 계정의 것으로 보여 주지 않는다.

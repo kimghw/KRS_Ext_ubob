@@ -246,7 +246,7 @@
     byId('alphaCertificatesAll').disabled = busy();
     byId('alphaCertificatesAllStop').hidden = !certificateBatch.busy || (!matchingBatch && !!certificateBatch.loginId);
     byId('alphaCertificatesAllStop').disabled = certificateBatchStopPending || certificateBatch.phase === 'stopping';
-    byId('alphaCertificatesAllStop').textContent = certificateBatchStopPending || certificateBatch.phase === 'stopping' ? '중지 중…' : '전체 받기 중지';
+    byId('alphaCertificatesAllStop').textContent = certificateBatchStopPending || certificateBatch.phase === 'stopping' ? '중지 중…' : '받기 중지';
     byId('alphaCertificateRetry').disabled = busy() || !!certificates.busy || !learningSelectionValid();
     byId('alphaCertificateRetry').textContent = certificatePending || certificates.busy ? '수료증 저장 확인 중…' : '수료증 저장 확인·재시도';
     byId('alphaCertificateResult').hidden = !certificateMessage;
@@ -265,10 +265,10 @@
       failed: items.filter(item => ['failed', 'interrupted', 'missing', 'unconfirmed'].includes(item.status)).length
     };
     const phases = {
-      listing: '수료한 전체 과정 찾는 중', downloading: '수료증 발급·다운로드 중',
-      done: counts.downloading ? '발급 준비 완료 · 다운로드 진행 중' : '전체 수료증 확인 완료',
-      stopping: '남은 발급 준비 중지 중', stopped: '전체 받기 중지됨',
-      interrupted: '전체 받기 중단됨', error: '전체 수료증 확인 실패'
+      listing: '올해 수료한 과정 찾는 중', downloading: '수료증 발급·다운로드 중',
+      done: counts.downloading ? '발급 준비 완료 · 다운로드 진행 중' : '올해 수료증 확인 완료',
+      stopping: '남은 발급 준비 중지 중', stopped: '수료증 받기 중지됨',
+      interrupted: '수료증 받기 중단됨', error: '수료증 확인 실패'
     };
     byId('alphaCertificateBatchPhase').textContent = phases[phase] || '수료증 확인 중';
     byId('alphaCertificateBatchDot').className = `dot ${['error', 'interrupted'].includes(phase) ? 'warn' : certificateBatch.busy ? 'ok' : phase === 'done' ? 'done' : ''}`;
@@ -282,7 +282,7 @@
     const scanned = number(certificateBatch.scanned), total = number(certificateBatch.total), processed = number(certificateBatch.processed);
     byId('alphaCertificateBatchProgress').hidden = !matching;
     byId('alphaCertificateBatchProgress').textContent = phase === 'listing'
-      ? `조회 ${scanned}개 · 수료 과정 ${total}개 발견`
+      ? `수료 이력 ${scanned} / ${total}개 조회`
       : `발급 확인 ${processed} / ${total}개 · 저장 ${counts.complete}개 · 다운로드 ${counts.downloading}개 · 확인 필요 ${counts.failed}개`;
     byId('alphaCertificateBatchBar').hidden = !matching || total === 0 || phase === 'listing';
     byId('alphaCertificateBatchBar').setAttribute('aria-valuemax', String(total));
@@ -299,7 +299,7 @@
     render();
     try {
       const result = await action(stop ? 'alpha-certificates-all-stop' : 'alpha-certificates-all');
-      if (result?.ok === false) throw new Error(result.error || result.message || '전체 수료증 요청을 처리하지 못했습니다.');
+      if (result?.ok === false) throw new Error(result.error || result.message || '수료증 받기 요청을 처리하지 못했습니다.');
       certificateMessage = result?.message || '';
     } catch (error) {
       certificateMessage = safeError(error);

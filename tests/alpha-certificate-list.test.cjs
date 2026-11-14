@@ -160,3 +160,34 @@ test('streamed JSON is bounded and valid streamed pages are supported', async ()
   const large = fixture({ fetchImpl: async () => new Response(' '.repeat(256 * 1024 + 1)) });
   await assert.rejects(large.list(), /너무 큽니다/);
 });
+
+test('year keeps only courses applied for in that year (Korea time) and still reads every page', async () => {
+  const at = (number, dateTime) => row(number, { requestInfo: { dateTime, user: { loginId: 'learner' } } });
+  const records = [at(1, '2026-11-13T13:43:21.874895'), at(2, '2026-01-01T00:00:00'),
+    ...Array.from({ length: 19 }, (_, index) => at(index + 3, '2025-11-07T09:00:00'))];
+  const requests = [];
+  const f = fixture({ fetchImpl: async (_url, options) => {
+    const body = JSON.parse(options.body), request = body.variables.request;
+    requests.push(request);
+    assert.match(body.query, /requestInfo \{ dateTime user \{ loginId \} \}/);
+    return response(page(records.slice(request.page.number * 20, request.page.number * 20 + 20), records.length, request.page.number));
+  } });
+  const result = await f.list({ year: 2026 });
+  assert.deepEqual(result.map(item => item.registrationId), [uuid(1), uuid(2)]);
+  assert.deepEqual(requests.map(item => item.page.number), [0, 1]);
+  assert.deepEqual(Object.keys(requests[0]).sort(), ['page', 'statuses', 'subjectText']);
+  assert.deepEqual(f.pages, [{ scanned: 20, total: 21 }, { scanned: 21, total: 21 }]);
+  assert.equal((await fixture({ fetchImpl: async () => response(page(records.slice(0, 20), 20)) }).list()).length, 20);
+});
+
+test('with a year, a missing or malformed application date fails instead of guessing', async () => {
+  for (const dateTime of [undefined, null, '', '13/11/2026', 'not-a-date']) {
+    const f = fixture({ fetchImpl: async () => response(page([row(1, { requestInfo: { dateTime, user: { loginId: 'learner' } } })])) });
+    await assert.rejects(f.list({ year: 2026 }), { code: 'ALPHA_CERTIFICATE_LIST' });
+  }
+  for (const year of [null, '2026', 2026.5, 1999]) {
+    const f = fixture();
+    await assert.rejects(f.list({ year }), { code: 'ALPHA_CERTIFICATE_LIST' });
+    assert.equal(f.calls.length, 0);
+  }
+});

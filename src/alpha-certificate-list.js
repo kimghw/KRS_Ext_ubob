@@ -9,7 +9,7 @@
   const QUERY = `query AlphaCompletedCertificateList($request: SearchMyRegistrationDocumentInput) {
     registrations: searchMyRegistrationDocument(request: $request) {
       number size totalPages totalElements
-      content { id sequenceId subjectId subjectName subjectType status requestInfo { user { loginId } } }
+      content { id sequenceId subjectId subjectName subjectType status requestInfo { dateTime user { loginId } } }
     }
   }`;
 
@@ -22,8 +22,11 @@
       throw new Error('알파 수료 목록 조회에 필요한 연결이 없습니다.');
     }
 
-    async function listCompleted({ loginId, shouldStop = () => false, onPage } = {}) {
+    // year를 주면 그해에 신청한(알파 신청일 기준) 수료 과정만 돌려준다. 사이트의 year 조건은 실제로 걸러지지 않아
+    // (2026-11 실계정 확인) 목록을 모두 읽은 뒤 신청일(requestInfo.dateTime, 한국 시간)로 거른다.
+    async function listCompleted({ loginId, year, shouldStop = () => false, onPage } = {}) {
       if (typeof loginId !== 'string' || !loginId.trim()) throw failure('알파 로그인 계정을 확인해 주세요.');
+      if (year !== undefined && !(Number.isInteger(year) && year >= 2000 && year <= 9999)) throw failure('수료증을 받을 연도를 확인하지 못했습니다.');
       const deadline = Date.now() + 120000;
       const check = () => {
         if (shouldStop()) throw failure('수료증 목록 조회를 중지했습니다.', 'ALPHA_CANCELLED');
@@ -55,7 +58,7 @@
             if (/[\r\n]/.test(decoded)) throw failure('알파 인증 정보를 다시 확인해 주세요.');
             headers['X-XSRF-TOKEN'] = decoded;
           }
-          // Omitting year/type/subjectType includes every year and course type.
+          // Omitting year/type/subjectType includes every year and course type (year is not honored anyway).
           // No isAdmin/memberId override is sent: the API uses its current learner.
           const response = await fetchImpl(`${ORIGIN}/api/graphql`, {
             method: 'POST', credentials: 'include', cache: 'no-store', redirect: 'error', headers,
@@ -144,6 +147,11 @@
             continue;
           }
           seen.set(row.id, identity);
+          if (year !== undefined) {
+            const requested = /^(\d{4})-\d{2}-\d{2}T/.exec(String(row.requestInfo?.dateTime || ''));
+            if (!requested) throw failure('수료 과정의 신청일을 확인하지 못했습니다. 알파에서 확인해 주세요.');
+            if (Number(requested[1]) !== year) continue;
+          }
           result.push({ registrationId: row.id, course: { id: row.subjectId, sequenceId: row.sequenceId,
             title: row.subjectName.trim(), type: Number(row.subjectType),
             url: `${ORIGIN}/explore/${row.subjectId}?sequenceId=${row.sequenceId}&tab=ALL` } });

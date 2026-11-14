@@ -13,11 +13,11 @@ async function until(predicate) {
   for (let turn = 0; turn < 100 && !predicate(); turn++) await new Promise(resolve => setImmediate(resolve));
   assert.ok(predicate(), 'background operation reached the expected state');
 }
-function fixture({ initial, login, list, ensure, session, get, set } = {}) {
+function fixture({ initial, login, list, ensure, session, get, set, now } = {}) {
   const saved = initial ? { alphaCertificateBatch: structuredClone(initial) } : {};
   const calls = { login: 0, list: [], ensure: [], sessions: 0, writes: [] };
   let run = 0;
-  const batch = create({ now: () => 1000 + calls.writes.length, id: () => `run-${++run}`,
+  const batch = create({ now: now || (() => 1000 + calls.writes.length), id: () => `run-${++run}`,
     auth: { ensureLoggedIn: async () => { calls.login++; return login ? login() : user; } },
     api: { session: async () => { calls.sessions++; return session ? session(calls.sessions) : user; } },
     list: { listCompleted: async options => {
@@ -164,6 +164,16 @@ test('duplicate registration pages are deduplicated, while conflicting identitie
   const conflicting = fixture({ list: async () => [entry(1), { ...entry(1), course: entry(2).course }] });
   await conflicting.batch.start(); await until(() => conflicting.state().phase === 'error');
   assert.equal(conflicting.calls.ensure.length, 0);
+});
+
+test('only this year (Korea time) is requested from the completed list', async () => {
+  // 한국 시간 2026-01-01 00:30 — UTC로는 아직 2025년이다.
+  const f = fixture({ now: () => Date.parse('2025-12-31T15:30:00Z') });
+  await f.batch.start(); await until(() => f.state().phase === 'done');
+  assert.equal(f.calls.list[0].year, 2026); assert.equal(f.state().year, 2026);
+  const empty = fixture({ now: () => Date.parse('2026-11-14T03:00:00Z'), list: async () => [] });
+  await empty.batch.start(); await until(() => empty.state().phase === 'done');
+  assert.match(empty.state().message, /2026년에 수강한 강의 중 수료한 교육이 없습니다/);
 });
 
 test('empty history reports no completed courses and malformed manager results never count as saved', async () => {

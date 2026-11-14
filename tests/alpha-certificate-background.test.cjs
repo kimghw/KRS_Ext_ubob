@@ -155,7 +155,7 @@ test('async busy guard blocks auth, enrollment and starts; the same actions resu
   for (const [type] of guarded) {
     const response = await f.dispatch({ type, ...selection }).response;
     assert.equal(response.ok, false, `${type} is blocked`);
-    assert.match(response.error, /전체 수료증 받기가 진행 중/);
+    assert.match(response.error, /올해 수료증 받기가 진행 중/);
   }
   assert.equal(f.calls.length, baseline, 'blocked actions do not reach auth, service, or playback');
   const stop = await f.dispatch({ type: 'alpha-certificates-all-stop' }).response;
