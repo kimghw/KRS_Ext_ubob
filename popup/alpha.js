@@ -35,6 +35,10 @@
   let runnerProgressKey = '';
   // 자동 설문을 예약한 과정(영상이 끝나면 실행이 설문을 제출한다).
   let reservedSurveys = [];
+  // 가져온 시험 내용({ loginId, courseId, text, count }). 과정 메뉴의 복사하기로 복사한다.
+  let examCapture = null;
+  // 과정별로 적어 둔 시험 답. 화면을 다시 그려도 남는다(저장하지는 않는다).
+  const examDrafts = {};
   let certificates = { busy: false, items: [] };
   let certificateBatch = { busy: false, phase: 'idle', items: [] };
   let certificatePending = false;
@@ -445,18 +449,69 @@
     }
   }
 
-  async function runCourse(courseId, type) {
+  async function runCourse(courseId, type, extra = {}) {
     if (courseAction?.pending) return;
     const working = { 'alpha-survey-open': '설문 페이지를 여는 중…', 'alpha-survey-auto': '설문을 제출하는 중…', 'alpha-course-certificate': '수료증을 확인하는 중…',
-      'alpha-exam-open': '시험 화면을 여는 중…' };
+      'alpha-exam-open': '시험 화면을 여는 중…', 'alpha-exam-capture': '시험 내용을 가져오는 중…', 'alpha-exam-answer': '답을 넣는 중…' };
     courseAction = { courseId, type, pending: true, message: working[type], error: false };
     render();
     try {
-      const result = await action(type, { courseId });
-      courseAction = { courseId, type, pending: false, message: result?.message || '완료했습니다.', error: result?.ok === false };
+      const result = await action(type, { courseId, ...extra });
+      // 응시를 시작해야 하는 경우에는 한 번 더 눌러 확인받는다(응시 횟수를 쓰는 되돌릴 수 없는 동작).
+      courseAction = result?.needsStart
+        ? { courseId, type, pending: false, confirm: true, message: result.message, error: false }
+        : { courseId, type, pending: false, message: result?.message || '완료했습니다.', error: result?.ok === false };
+      // 시험 내용은 누를 때마다 사이트에서 새로 가져와 바로 복사한다(다시 응시하면 문항이 바뀔 수 있다).
+      if (type === 'alpha-exam-capture' && result?.ok === true) {
+        const { alphaExamCapture: fresh } = await chrome.storage.local.get('alphaExamCapture');
+        if (fresh?.courseId === courseId && typeof fresh.text === 'string' && fresh.text) {
+          examCapture = fresh;
+          courseAction.message = await copyText(examClipboard(fresh.text))
+            ? `${fresh.count}문항을 새로 가져와 복사했습니다.` : `${fresh.count}문항을 가져왔습니다. 복사하기를 누르세요.`;
+        }
+      }
     } catch (error) {
       courseAction = { courseId, type, pending: false, message: safeError(error), error: true };
     }
+    render();
+  }
+
+  // 시험 바로가기·시험 내용: 응시 중인 기록이 있으면 바로 열거나 가져오고, 없으면 한 번 더 눌렀을 때 응시를 시작한다.
+  // 답을 고르거나 제출하지 않는다.
+  function examAction(courseId, type) {
+    const confirmed = courseAction?.courseId === courseId && courseAction.type === type && courseAction.confirm === true;
+    runCourse(courseId, type, confirmed ? { start: true } : {});
+  }
+  const examCaptureOf = (courseId) => {
+    const loginId = certificateLoginId();
+    return examCapture && examCapture.courseId === courseId && typeof examCapture.text === 'string' && examCapture.text &&
+      loginId && examCapture.loginId === loginId ? examCapture : null;
+  };
+  // 복사한 시험 내용 끝에 붙이는 요청. 답 넣기가 읽는 형식(문항번호-보기번호)으로만 답하게 해서,
+  // 받은 답을 그대로 답 넣기 칸에 붙여 넣을 수 있게 한다(설명이 섞이면 답 넣기는 짐작하지 않고 거절한다).
+  const examClipboard = (text) => `${text}\n\n숫자 답만 알려줘. 다른 말 없이 한 줄에 한 문항씩 "1: 4"처럼 문항번호: 보기번호로 써줘.`;
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch {
+      // 클립보드 권한이 막힌 화면에서는 임시 입력란을 선택해 복사한다.
+      const area = element('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.cssText = 'position:fixed;left:-9999px;top:0';
+      document.body.append(area);
+      area.select();
+      let copied = false;
+      try { copied = document.execCommand('copy'); } catch { copied = false; }
+      area.remove();
+      return copied;
+    }
+  }
+  async function copyExam(courseId) {
+    const capture = examCaptureOf(courseId);
+    if (!capture || courseAction?.pending) return;
+    const copied = await copyText(examClipboard(capture.text));
+    courseAction = { courseId, type: 'alpha-exam-copy', pending: false,
+      message: copied ? `${capture.count}문항을 복사했습니다.` : '복사하지 못했습니다.', error: !copied };
     render();
   }
 
@@ -486,7 +541,7 @@
   function autoSurvey(courseId) {
     if (courseAction?.pending) return;
     // 설문 제출은 되돌릴 수 없으므로 한 번 더 눌러야 보낸다.
-    if (!(courseAction?.courseId === courseId && courseAction.confirm)) {
+    if (!(courseAction?.courseId === courseId && courseAction.type === 'alpha-survey-auto' && courseAction.confirm)) {
       courseAction = { courseId, type: 'alpha-survey-auto', pending: false, confirm: true, message: '한 번 더 누르면 제출합니다.', error: false };
       render();
       return;
@@ -495,7 +550,7 @@
   }
 
   function renderCategories() {
-    const nextKey = JSON.stringify([preferences.role, preferences.selectedIds, busy(), courseAction,
+    const nextKey = JSON.stringify([preferences.role, preferences.selectedIds, busy(), courseAction, examCapture?.capturedAt, examCapture?.courseId,
       catalog.courses.map((course) => statusOf(course.id) || ''), reservedSurveys, runner.running && runner.courseId]);
     if (nextKey === categoriesKey) return;
     categoriesKey = nextKey;
@@ -552,7 +607,7 @@
         const reserved = reservable && reservedSurveys.includes(course.id);
         const menu = [
           ['설문 바로가기', () => runCourse(course.id, 'alpha-survey-open'), surveyReady, surveyReady ? '이 과정의 설문 페이지를 엽니다.' : surveyWhy],
-          [mine?.confirm ? '제출 확인' : reserved ? '설문 예약됨' : '자동 설문',
+          [mine?.confirm && mine.type === 'alpha-survey-auto' ? '제출 확인' : reserved ? '설문 예약됨' : '자동 설문',
             () => (reservable ? reserveSurvey(course.id, !reserved) : autoSurvey(course.id)), surveyReady || reservable,
             surveyReady ? '모든 문항을 "그렇다", 서술형은 "좋았다"로 제출합니다.'
               : reserved ? '영상이 끝나면 설문을 제출합니다. 누르면 예약을 취소합니다.'
@@ -562,8 +617,16 @@
         ];
         // 시험이 있는 과정에만 보인다. 시험은 자동으로 응시하지 않고 시험 화면만 연다.
         if (String(course.completion || '').includes('시험')) {
-          menu.splice(2, 0, ['시험 바로가기', () => runCourse(course.id, 'alpha-exam-open'), examReady,
-            examReady ? '시험 화면을 열어 직접 응시합니다.' : status === 'completed' ? '이미 수료한 과정입니다.' : '영상 학습을 마치면 쓸 수 있습니다.']);
+          const examWhy = status === 'completed' ? '이미 수료한 과정입니다.' : '영상 학습을 마치면 쓸 수 있습니다.';
+          const starting = type => mine?.confirm && mine.type === type;
+          const exam = [[starting('alpha-exam-open') ? '응시 시작 확인' : '시험 바로가기', () => examAction(course.id, 'alpha-exam-open'), examReady,
+            examReady ? '시험 창을 띄웁니다. 응시 중이면 이어서 엽니다.' : examWhy],
+          // 문제·보기만 글로 가져온다. 답을 고르거나 제출하지 않는다.
+          [starting('alpha-exam-capture') ? '응시 시작 확인' : '시험 내용', () => examAction(course.id, 'alpha-exam-capture'), examReady,
+            examReady ? '누를 때마다 새로 가져와 복사합니다. 제출하지 않습니다.' : examWhy]];
+          // 가져온 내용이 있을 때만 보인다.
+          if (examCaptureOf(course.id)) exam.push(['복사하기', () => copyExam(course.id), true, '가져온 시험 내용을 복사합니다.']);
+          menu.splice(2, 0, ...exam);
         }
         for (const [text, handler, enabled, title, active] of menu) {
           const button = element('button', `link${active ? ' on' : ''}`, text);
@@ -575,6 +638,27 @@
           links.append(button);
         }
         card.append(label, links);
+        // 답 넣기: 적은 답을 응시 중인 시험 창에 넣는다. 제출은 직접 한다.
+        if (examReady && String(course.completion || '').includes('시험')) {
+          // 쓰는 순서: 시험 내용(복사하기)으로 복사 → LLM 채팅에 붙여 넣기 → 받은 답을 그대로 아래 칸에.
+          card.append(element('p', 'hint alpha-exam-guide', '시험 내용 복사 → LLM 채팅 → 답을 그대로 아래 칸에'));
+          const row = element('div', 'alpha-exam-answer');
+          const field = element('textarea');
+          field.rows = 2;
+          // 복사한 시험 내용 끝의 요청과 같은 형식(한 줄에 "문항번호: 보기번호")을 보여 준다.
+          field.placeholder = '1: 4\n2: 3 …';
+          field.setAttribute('aria-label', '시험 답');
+          field.value = examDrafts[course.id] || '';
+          const send = element('button', '', '답 넣기');
+          send.type = 'button';
+          send.title = '시험 창에 답을 넣습니다. 제출은 직접 합니다.';
+          const update = () => { send.disabled = !!courseAction?.pending || !field.value.trim(); };
+          field.addEventListener('input', () => { examDrafts[course.id] = field.value; update(); });
+          send.addEventListener('click', () => runCourse(course.id, 'alpha-exam-answer', { text: field.value }));
+          update();
+          row.append(field, send);
+          card.append(row);
+        }
         if (mine?.message) {
           const result = element('p', `msg alpha-course-result${mine.error ? ' warn' : ''}`, mine.message);
           result.setAttribute('role', 'status');
@@ -735,6 +819,7 @@
     }
     if (changes.alphaCourseStatus) courseStatus = changes.alphaCourseStatus.newValue || { loginId: '', items: {} };
     if (changes.alphaSurveyReserved) reservedSurveys = Array.isArray(changes.alphaSurveyReserved.newValue) ? changes.alphaSurveyReserved.newValue : [];
+    if (changes.alphaExamCapture) examCapture = changes.alphaExamCapture.newValue || null;
     if (changes.alphaAccount) account = changes.alphaAccount.newValue || null;
     if (changes.alphaAuth) {
       const previousLoginId = certificateLoginId();
@@ -751,12 +836,12 @@
     }
     if (changes.alphaAuth || changes.alphaPreferences) requestCourseStatus();
     if (changes.alphaState || changes.alphaPreferences || changes.alphaRunner || changes.alphaAccount || changes.alphaAuth || changes.alphaCertificates ||
-        changes.alphaCertificateBatch || changes.alphaCourseStatus || changes.alphaSurveyReserved) render();
+        changes.alphaCertificateBatch || changes.alphaCourseStatus || changes.alphaSurveyReserved || changes.alphaExamCapture) render();
   });
   // 알파 탭을 볼 때 과정별 수강 상태를 확인한다(조회만 하며, 로그인되어 있지 않으면 아무것도 하지 않는다).
   new MutationObserver(() => { if (!byId('tabAlpha').hidden) requestCourseStatus(); })
     .observe(byId('tabAlpha'), { attributes: true, attributeFilter: ['hidden'] });
-  chrome.storage.local.get({ alphaPreferences: null, alphaState: null, alphaRunner: null, alphaAccount: null, alphaAuth: null, alphaCertificates: null, alphaCertificateBatch: null, alphaCourseStatus: null, alphaSurveyReserved: [] }).then((saved) => {
+  chrome.storage.local.get({ alphaPreferences: null, alphaState: null, alphaRunner: null, alphaAccount: null, alphaAuth: null, alphaCertificates: null, alphaCertificateBatch: null, alphaCourseStatus: null, alphaSurveyReserved: [], alphaExamCapture: null }).then((saved) => {
     if (saved.alphaPreferences && validRole(saved.alphaPreferences.role)) {
       preferences = { role: saved.alphaPreferences.role, selectedIds: Array.isArray(saved.alphaPreferences.selectedIds) ? saved.alphaPreferences.selectedIds : catalog.defaultsForRole(saved.alphaPreferences.role) };
     }
@@ -768,6 +853,7 @@
     if (saved.alphaCertificateBatch) certificateBatch = saved.alphaCertificateBatch;
     if (saved.alphaCourseStatus) courseStatus = saved.alphaCourseStatus;
     if (Array.isArray(saved.alphaSurveyReserved)) reservedSurveys = saved.alphaSurveyReserved;
+    examCapture = saved.alphaExamCapture || null;
     runnerProgressKey = [runner.courseId, (runner.surveyCourses || []).length, (runner.completedCourseIds || []).length, runner.phase === 'done'].join('|');
     render();
     if (!byId('tabAlpha').hidden) requestCourseStatus();

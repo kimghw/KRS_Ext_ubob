@@ -1,6 +1,6 @@
 importScripts('shared.js', 'alpha-catalog.js', 'alpha-api.js', 'alpha-auth.js', 'alpha-service.js',
   'alpha-learning.js', 'alpha-certificate-api.js', 'alpha-certificates.js', 'alpha-certificate-list.js',
-  'alpha-certificate-batch.js', 'alpha-host.js', 'alpha-runner.js', 'alpha-survey-indicator.js', 'alpha-survey.js');
+  'alpha-certificate-batch.js', 'alpha-host.js', 'alpha-runner.js', 'alpha-survey-indicator.js', 'alpha-survey.js', 'alpha-exam.js');
 
 const alphaSurveyIndicator = AlphaSurveyIndicator.create({ action: chrome.action, runtime: chrome.runtime });
 let surveyIconRefresh = 0;
@@ -200,16 +200,94 @@ async function openAlphaSurvey(course) {
   await openBesideActiveTab(url);
   return { ok: true, message: '설문 페이지를 열었습니다.' };
 }
-// 시험 바로가기: 시험은 자동으로 응시하지 않는다. 강의실을 시험 차시로 열어 사용자가 직접 응시하게 한다.
-async function openAlphaExam(course) {
-  const result = await alphaLearning.inspect(course);
-  if (result.status === 'completed') return { ok: false, message: '이미 수료한 과정입니다.' };
-  const lessons = result.lessons || [];
-  const exam = lessons.find(lesson => lesson.type === 10 && !lesson.completed);
-  if (!exam) return { ok: false, message: '응시할 시험이 없습니다.' };
-  if (lessons.some(lesson => lesson.playable && !lesson.completed)) return { ok: false, message: '영상 학습을 먼저 마치세요.' };
-  await openBesideActiveTab(exam.url);
-  return { ok: true, message: '시험 화면을 열었습니다.' };
+// 새로 연 탭이 알파 페이지를 다 불러올 때까지 기다린다(닫히거나 시간이 지나면 false).
+function waitAlphaTab(tabId, ms) {
+  return new Promise(resolve => {
+    let settled = false;
+    const ready = tab => tab?.status === 'complete' && String(tab.url || '').startsWith('https://alpha-campus.kr/');
+    const updated = (id, info, tab) => { if (id === tabId && ready(tab)) finish(true); };
+    const removed = id => { if (id === tabId) finish(false); };
+    const timer = setTimeout(() => finish(false), ms);
+    function finish(value) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(updated);
+      chrome.tabs.onRemoved.removeListener(removed);
+      resolve(value);
+    }
+    chrome.tabs.onUpdated.addListener(updated);
+    chrome.tabs.onRemoved.addListener(removed);
+    chrome.tabs.get(tabId).then(tab => { if (ready(tab)) finish(true); }, () => finish(false));
+  });
+}
+// 시험 바로가기: 강의실을 시험 차시로 열고, 사이트의 시험 표 "현황" → "이어하기"를 눌러 시험 창을 띄운다
+// (사이트는 주소만으로 시험 창을 열지 않는다). 응시 중인 기록이 없으면 한 번 더 눌러 확인했을 때(start)만
+// "응시"를 누른다(응시 1회 사용). 답을 고르거나 제출하지 않는다.
+async function inAlphaTab(tabId, func, args) {
+  try {
+    const [injection] = await chrome.scripting.executeScript({ target: { tabId }, func, args });
+    return injection?.result || null;
+  } catch { return null; } // 탭이 닫히거나 다른 페이지로 바뀐 경우
+}
+async function showAlphaExam(plan) {
+  const tab = await openBesideActiveTab(plan.url);
+  if (!await waitAlphaTab(tab.id, 30000)) return { tabId: tab.id, ok: false, message: '강의실이 열리지 않았습니다. 시험 표의 현황을 누르세요.' };
+  const outcome = await inAlphaTab(tab.id, AlphaExam.openInPage, [plan.title, !plan.resume]);
+  if (!outcome?.ok) return { tabId: tab.id, ok: false, message: outcome?.message || '시험 창을 열지 못했습니다. 시험 표의 현황을 누르세요.' };
+  return { tabId: tab.id, ok: true, message: outcome.started ? '응시를 시작해 시험 창을 열었습니다.' : '시험 창을 열었습니다.' };
+}
+async function openAlphaExam(course, start) {
+  const plan = await alphaExam.prepareOpen(course, { start });
+  if (!plan.ok) return plan;
+  const { ok, message } = await showAlphaExam(plan);
+  return { ok, message };
+}
+// 답 넣기: 사이드 패널에 적은 답을 응시 중인 시험 창에 넣는다. 사이트처럼 문항을 열고 보기를 누른다(누를 때마다 사이트가 저장).
+// 이 과정의 강의실 탭에 시험 창이 떠 있으면 거기에, 없으면 시험 바로가기처럼 이어서 연 뒤 넣는다.
+// 새 응시는 시작하지 않고, 제출은 사용자가 한다.
+async function answerAlphaExam(course, answers) {
+  const plan = await alphaExam.prepareOpen(course);
+  if (!plan.ok) return { ok: false, message: '응시 중인 시험이 없습니다. 시험 바로가기로 먼저 응시하세요.' };
+  const tabs = (await chrome.tabs.query({ url: 'https://alpha-campus.kr/my/classRoom/classRoomDetail*' })).filter(tab => {
+    try { return new URL(tab.url).searchParams.get('registrationId') === plan.registrationId; } catch { return false; }
+  }).sort((one, two) => Number(!!two.active) - Number(!!one.active) || (two.lastAccessed || 0) - (one.lastAccessed || 0));
+  let tabId = null, result = null;
+  for (const tab of tabs) {
+    result = await inAlphaTab(tab.id, AlphaExam.answerInPage, [answers]);
+    if (result?.ok) { tabId = tab.id; break; }
+  }
+  if (!tabId) {
+    const shown = await showAlphaExam(plan);
+    if (!shown.ok) return { ok: false, message: shown.message };
+    tabId = shown.tabId;
+    result = await inAlphaTab(tabId, AlphaExam.answerInPage, [answers]);
+    if (!result?.ok) return { ok: false, message: '시험 창에 답을 넣지 못했습니다.' };
+  }
+  await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+  const done = result.done || [], failed = result.failed || [];
+  const head = `${result.total ? `${result.total}문항 중 ` : ''}${done.length}문항을 넣었습니다.`;
+  return { ok: failed.length === 0 && done.length > 0,
+    message: failed.length ? `${head} ${failed.join('·')}번은 직접 고르세요.` : `${head} 확인 후 제출하세요.` };
+}
+// 시험 내용: 응시 화면의 문제·보기를 글로 가져와 사이드 패널에서 복사할 수 있게 둔다. 답을 고르거나 제출하지 않는다.
+// 응시 중인 기록이 없으면 사용자가 한 번 더 눌러 확인했을 때(start)만 응시를 시작한다.
+const alphaExam = AlphaExam.createClient({ getCsrfToken: alphaCsrfToken, learning: alphaLearning });
+async function captureAlphaExam(course, user, start) {
+  // 누를 때마다 사이트에서 새로 가져온다. 새로 가져오지 못하면 이 과정의 지난 내용은 지운다
+  // (다시 응시하면 문항이 바뀔 수 있어, 지난 응시의 내용을 복사하지 않게 한다).
+  const forget = async () => {
+    const { alphaExamCapture: old } = await chrome.storage.local.get('alphaExamCapture');
+    if (old?.courseId === course.id) await chrome.storage.local.remove('alphaExamCapture');
+  };
+  let result;
+  try { result = await alphaExam.capture(course, { start }); }
+  catch (error) { await forget().catch(() => {}); throw error; }
+  if (!result.ok) { await forget(); return result; }
+  // 문항 글은 길어서 응답 대신 저장소로 전달한다(이 PC에만 저장).
+  await chrome.storage.local.set({ alphaExamCapture: { loginId: user.loginId, courseId: course.id, examId: result.examId,
+    title: result.title, count: result.count, text: result.text, capturedAt: Date.now() } });
+  return { ok: true, count: result.count, started: result.started, message: result.message };
 }
 async function saveAlphaCourseCertificate(course, user) {
   const result = await alphaLearning.inspect(course);
@@ -1541,7 +1619,14 @@ const POPUP_ACTIONS = {
   'alpha-survey-reserve': (msg) => reserveAlphaSurvey(msg),
   'alpha-course-certificate': (msg) => alphaCourseAction(msg, saveAlphaCourseCertificate),
   'alpha-course-status': (msg) => refreshAlphaCourseStatus(msg),
-  'alpha-exam-open': (msg) => alphaCourseAction(msg, openAlphaExam),
+  'alpha-exam-open': (msg) => alphaCourseAction(msg, course => openAlphaExam(course, msg.start === true)),
+  // 답을 읽지 못하면 사이트에 묻기 전에 바로 알린다.
+  'alpha-exam-answer': async (msg) => {
+    if (typeof msg.text !== 'string' || msg.text.length > 2000) throw new Error('답을 확인하세요.');
+    const answers = AlphaExam.parseAnswers(msg.text);
+    return alphaCourseAction(msg, course => answerAlphaExam(course, answers));
+  },
+  'alpha-exam-capture': (msg) => alphaCourseAction(msg, (course, user) => captureAlphaExam(course, user, msg.start === true)),
   'alpha-certificates-all': () => alphaManual(() => alphaCertificateBatch.start()),
   'alpha-certificates-all-stop': () => alphaCertificateBatch.stop(),
   'alpha-account-save': (msg) => alphaManual(() => alphaAuth.saveAccount(msg)),

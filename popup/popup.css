@@ -247,6 +247,16 @@ button:disabled { opacity: .5; cursor: default; }
 .alpha-course-state.learning { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .alpha-course-state.survey, .alpha-course-state.exam, .alpha-course-state.attention { color: var(--warn); border-color: var(--warn); }
 .alpha-course-detail { margin-left: 21px; }
+/* 시험 답 넣기: 시험 바로가기 줄 바로 아래 */
+.alpha-exam-answer { margin: 7px 0 0 21px; display: flex; gap: 6px; align-items: stretch; }
+.alpha-exam-guide { margin: 7px 0 0 21px; }
+.alpha-exam-guide + .alpha-exam-answer { margin-top: 4px; }
+.alpha-exam-answer textarea {
+  flex: 1; min-width: 0; font: inherit; font-size: 12px; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; resize: vertical;
+}
+.alpha-exam-answer textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.alpha-exam-answer button { flex: none; }
 .alpha-selected { list-style: none; padding: 0; margin: 10px 0 0; }
 .alpha-selected li { padding: 9px 0; border-top: 1px solid var(--line); }
 .alpha-selected .alpha-item-title { margin: 0 0 5px; font-size: 12px; overflow-wrap: anywhere; }

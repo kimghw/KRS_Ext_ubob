@@ -14,6 +14,9 @@ const trustedSender = {
 const user = { authenticated: true, loginId: 'fixture-account' };
 const selection = { role: 'researcher', courseIds: ['fixture-course'] };
 const flush = () => new Promise(resolve => setImmediate(resolve));
+// 강의실 탭에 넣는 함수 자리. 실제 버튼 누르기는 alpha-exam.test.cjs에서 확인한다.
+function examInPage() {}
+function examAnswerInPage() {}
 function deferred() {
   let resolve, reject;
   const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
@@ -29,7 +32,7 @@ async function eventually(check, label) {
 
 // The message listener, concurrency guards, and asynchronous batch job are real.
 // Site login/enrollment/playback and Chrome I/O are deterministic external fakes.
-function fixture({ authGate, listGate, initial = {}, inspect } = {}) {
+function fixture({ authGate, listGate, initial = {}, inspect, capture, prepareOpen } = {}) {
   const calls = [], runtimeErrors = [], stores = { local: structuredClone(initial), sync: {}, session: {} };
   const event = () => ({ listeners: [], addListener(fn) { this.listeners.push(fn); } });
   const storageChanged = event();
@@ -86,6 +89,9 @@ function fixture({ authGate, listGate, initial = {}, inspect } = {}) {
     } }) },
     SharedOffscreen: { create: () => ({}) }, AlphaHost: { create: () => ({}) },
     AlphaSurvey: { createClient: () => ({}) },
+    AlphaExam: { openInPage: examInPage, answerInPage: examAnswerInPage, parseAnswers: require('../src/alpha-exam.js').parseAnswers, createClient: () => ({
+      capture: async (...args) => { calls.push({ name: 'exam.capture', args }); return capture(...args); },
+      prepareOpen: async (...args) => { calls.push({ name: 'exam.prepareOpen', args }); return prepareOpen(...args); } }) },
     AlphaRunner: { ALARM: 'alpha-test-alarm', create: () => runner }
   };
   let context;
@@ -106,7 +112,7 @@ function fixture({ authGate, listGate, initial = {}, inspect } = {}) {
     return { response, returned };
   }
   return {
-    calls, runtimeErrors, stores, dispatch, ticks: () => ticks, tabs: chrome.tabs,
+    calls, runtimeErrors, stores, dispatch, ticks: () => ticks, tabs: chrome.tabs, scripting: chrome.scripting,
     isBusy: () => vm.runInContext('alphaCertificateBatch.isBusy()', context),
     batchState: () => vm.runInContext('alphaCertificateBatch.getState()', context)
   };
@@ -247,23 +253,143 @@ test('an auto survey can be reserved and cancelled per course from the panel onl
   assert.deepEqual(f.calls, [], 'reserving alone sends nothing to the site');
 });
 
-test('the exam shortcut only opens the exam lesson for the user and never answers it', async () => {
+test('the exam shortcut opens the classroom beside the current tab and presses the site buttons that show the exam', async () => {
   const catalog = require('../src/alpha-catalog.js');
   const [courseId] = catalog.defaultsForRole('researcher');
   const examUrl = 'https://alpha-campus.kr/my/classRoom/classRoomDetail?registrationId=r&type=ONLINE&sequenceLessonId=exam';
-  const lessons = done => [{ type: 2, playable: true, completed: done }, { type: 10, playable: false, completed: false, url: examUrl }];
-  const opened = [], places = [];
-  const run = async inspectResult => {
-    const f = fixture({ inspect: async () => inspectResult });
+  const opened = [], places = [], injected = [];
+  const run = async ({ plan, outcome = { ok: true, started: false }, loads = true, extra = {} }) => {
+    const f = fixture({ prepareOpen: async (_, options) => plan(options) });
+    const listeners = { updated: [], removed: [] };
     f.tabs.query = async () => [{ index: 3, windowId: 7 }];
-    f.tabs.create = async value => { opened.push(value.url); places.push([value.index, value.windowId, value.active]); return { id: 1 }; };
-    return (await f.dispatch({ type: 'alpha-exam-open', courseId }).response);
+    f.tabs.create = async value => {
+      opened.push(value.url); places.push([value.index, value.windowId, value.active]);
+      // 불러오지 못하고 닫힌 탭은 기다리지 않는다.
+      if (!loads) setImmediate(() => listeners.removed.forEach(listener => listener(11)));
+      return { id: 11 };
+    };
+    f.tabs.get = async () => ({ id: 11, status: loads ? 'complete' : 'loading', url: loads ? examUrl : '' });
+    for (const [name, key] of [['onUpdated', 'updated'], ['onRemoved', 'removed']]) {
+      f.tabs[name] = { addListener: fn => listeners[key].push(fn), removeListener: fn => { listeners[key] = listeners[key].filter(item => item !== fn); } };
+    }
+    f.scripting.executeScript = async details => { injected.push(details); return [{ frameId: 0, result: outcome }]; };
+    const response = await f.dispatch({ type: 'alpha-exam-open', courseId, ...extra }).response;
+    assert.deepEqual([listeners.updated.length, listeners.removed.length], [0, 0], 'tab listeners are removed once the tab is ready or gone');
+    return { response, options: f.calls.find(call => call.name === 'exam.prepareOpen')?.args[1] };
   };
-  assert.equal((await run({ status: 'attention', attentionReason: 'assessment', lessons: lessons(true) })).result.message, '시험 화면을 열었습니다.');
+
+  // 응시 중인 기록이 있으면 이어서 연다: "응시"는 누르지 않게 start 없이 넣는다.
+  const resume = await run({ plan: () => ({ ok: true, resume: true, title: '시험', url: examUrl }) });
+  assert.equal(resume.response.result.message, '시험 창을 열었습니다.');
+  assert.equal(resume.options.start, false);
   assert.deepEqual(opened, [examUrl]);
-  assert.deepEqual(places, [[4, 7, true]], 'the exam opens right next to the tab being viewed');
-  assert.equal((await run({ status: 'ready', lessons: lessons(false) })).result.message, '영상 학습을 먼저 마치세요.');
-  assert.equal((await run({ status: 'completed', lessons: [] })).result.message, '이미 수료한 과정입니다.');
-  assert.equal((await run({ status: 'attention', attentionReason: 'survey', lessons: [{ type: 2, playable: true, completed: true }] })).result.message, '응시할 시험이 없습니다.');
-  assert.deepEqual(opened, [examUrl], 'nothing else is opened');
+  assert.deepEqual(places, [[4, 7, true]], 'the classroom opens right next to the tab being viewed');
+  assert.equal(injected.length, 1);
+  assert.equal(injected[0].target.tabId, 11);
+  assert.equal(injected[0].func, examInPage);
+  assert.deepEqual([...injected[0].args], ['시험', false]);
+
+  // 응시 중인 기록이 없으면 확인을 받기 전에는 탭도 열지 않는다.
+  const ask = await run({ plan: ({ start }) => (start ? { ok: true, resume: false, title: '시험', url: examUrl }
+    : { ok: false, needsStart: true, used: 2, limit: 7, message: '한 번 더 누르면 응시 시작 (3/7회)' }) });
+  assert.equal(ask.response.result.needsStart, true);
+  assert.equal(opened.length, 1, 'nothing is opened before confirmation');
+  const confirmed = await run({ plan: ({ start }) => ({ ok: start, resume: false, title: '시험', url: examUrl }),
+    outcome: { ok: true, started: true }, extra: { start: true } });
+  assert.equal(confirmed.options.start, true);
+  assert.equal(confirmed.response.result.message, '응시를 시작해 시험 창을 열었습니다.');
+  assert.deepEqual([...injected.at(-1).args], ['시험', true], 'only a confirmed request may press 응시');
+
+  // 강의실에서 버튼을 찾지 못하면 그 이유를 그대로, 탭이 열리지 않으면 넣지 않는다.
+  const missing = await run({ plan: () => ({ ok: true, resume: true, title: '시험', url: examUrl }),
+    outcome: { ok: false, message: '시험 표를 찾지 못했습니다.' } });
+  assert.equal(missing.response.result.ok, false);
+  assert.equal(missing.response.result.message, '시험 표를 찾지 못했습니다.');
+  const before = injected.length;
+  const closed = await run({ plan: () => ({ ok: true, resume: true, title: '시험', url: examUrl }), loads: false });
+  assert.match(closed.response.result.message, /강의실이 열리지 않았습니다/);
+  assert.equal(injected.length, before, 'nothing is pressed in a tab that did not load');
+});
+
+test('every exam content request reads the site again, and content that could not be refreshed is never kept for copying', async () => {
+  const catalog = require('../src/alpha-catalog.js');
+  const [courseId, otherId] = catalog.defaultsForRole('researcher');
+  let reply = async () => ({ ok: true, started: false, examId: 'exam-2', title: '시험', count: 10, text: '새 문항' });
+  const f = fixture({ capture: (...args) => reply(...args),
+    initial: { alphaExamCapture: { loginId: user.loginId, courseId, examId: 'exam-1', count: 10, text: '지난 문항', capturedAt: 1 } } });
+  const ask = extra => f.dispatch({ type: 'alpha-exam-capture', courseId, ...extra }).response;
+
+  const fresh = await ask();
+  assert.equal(fresh.result.ok, true); assert.equal(fresh.result.count, 10);
+  assert.equal(f.stores.local.alphaExamCapture.text, '새 문항', 'the new attempt replaces the old content');
+  assert.equal(f.stores.local.alphaExamCapture.examId, 'exam-2');
+  assert.equal(f.stores.local.alphaExamCapture.loginId, user.loginId);
+  assert.equal(f.calls.filter(call => call.name === 'exam.capture').at(-1).args[1].start, false);
+
+  // 응시 중 기록이 없어 새로 가져오지 못하면(제출 뒤 등) 지난 내용은 지운다. 확인한 뒤에만 응시를 시작한다.
+  reply = async (_, { start }) => (start ? { ok: true, started: true, examId: 'exam-3', count: 10, text: '다시 응시한 문항' }
+    : { ok: false, needsStart: true, used: 1, limit: 7, message: '한 번 더 누르면 응시 시작 (2/7회)' });
+  assert.equal((await ask()).result.needsStart, true);
+  assert.equal(f.stores.local.alphaExamCapture, undefined);
+  assert.equal((await ask({ start: true })).result.started, true);
+  assert.equal(f.stores.local.alphaExamCapture.text, '다시 응시한 문항');
+
+  // 가져오다 실패해도 지난 내용은 남기지 않는다. 다른 과정의 내용은 건드리지 않는다.
+  reply = async () => { throw new Error('알파 시험 요청 시간이 초과되었습니다.'); };
+  assert.equal((await ask()).ok, false);
+  assert.equal(f.stores.local.alphaExamCapture, undefined);
+  f.stores.local.alphaExamCapture = { loginId: user.loginId, courseId: otherId, count: 1, text: '다른 과정' };
+  await ask();
+  assert.equal(f.stores.local.alphaExamCapture.text, '다른 과정');
+  assert.deepEqual(f.runtimeErrors, []);
+});
+
+test('typed answers go into the exam window of this course, opening it first when needed, and are never submitted', async () => {
+  const catalog = require('../src/alpha-catalog.js');
+  const [courseId] = catalog.defaultsForRole('researcher');
+  const room = id => `https://alpha-campus.kr/my/classRoom/classRoomDetail?registrationId=${id}&type=ONLINE`;
+  const resumePlan = { ok: true, resume: true, title: '시험', url: room('reg-1'), registrationId: 'reg-1' };
+  const run = async ({ text = '1④ 2③ 5 O', plan = resumePlan, tabs = [], answer = () => null }) => {
+    const f = fixture({ prepareOpen: async () => plan });
+    const injected = [], activated = [], created = [];
+    f.tabs.query = async query => (query?.url ? tabs : [{ index: 0, windowId: 1 }]);
+    f.tabs.create = async value => { created.push(value.url); return { id: 99 }; };
+    f.tabs.get = async () => ({ id: 99, status: 'complete', url: room('reg-1') });
+    f.tabs.update = async (id, value) => { activated.push([id, value.active]); return {}; };
+    f.tabs.onUpdated = f.tabs.onRemoved = { addListener() {}, removeListener() {} };
+    f.scripting.executeScript = async ({ target, func, args }) => {
+      injected.push({ tabId: target.tabId, func, args: JSON.parse(JSON.stringify(args)) });
+      return [{ result: func === examInPage ? { ok: true, started: false } : answer(target.tabId) }];
+    };
+    const response = await f.dispatch({ type: 'alpha-exam-answer', courseId, text }).response;
+    return { response, injected, activated, created, calls: f.calls };
+  };
+  const filled = { ok: true, total: 10, done: [1, 2, 5], failed: [] };
+
+  // 같은 과정의 강의실 탭 중 시험 창이 떠 있는 탭을 찾는다(보고 있는 탭부터). 다른 과정의 탭에는 넣지 않는다.
+  const found = await run({ tabs: [{ id: 1, url: room('other') }, { id: 2, url: room('reg-1') }, { id: 3, url: room('reg-1'), active: true }],
+    answer: tabId => (tabId === 2 ? filled : { ok: false, missing: true }) });
+  assert.deepEqual(found.injected.map(item => item.tabId), [3, 2]);
+  assert.ok(found.injected.every(item => item.func === examAnswerInPage));
+  assert.deepEqual(found.injected[0].args, [[{ number: 1, choice: 4 }, { number: 2, choice: 3 }, { number: 5, choice: 'O' }]]);
+  assert.deepEqual(found.activated, [[2, true]], 'the tab with the answers comes to the front for review and submission');
+  assert.equal(found.created.length, 0);
+  assert.equal(found.response.result.message, '10문항 중 3문항을 넣었습니다. 확인 후 제출하세요.');
+
+  // 시험 창이 없으면 시험 바로가기처럼 이어서 연 뒤 넣고, 넣지 못한 문항은 알려 준다.
+  const opened = await run({ answer: tabId => (tabId === 99 ? { ok: true, total: 10, done: [1, 5], failed: [2] } : null) });
+  assert.deepEqual(opened.created, [room('reg-1')]);
+  assert.deepEqual(opened.injected.map(item => [item.tabId, item.func === examInPage ? 'open' : 'answer']), [[99, 'open'], [99, 'answer']]);
+  assert.deepEqual(opened.injected[0].args, ['시험', false], 'opening for answers never presses 응시');
+  assert.equal(opened.response.result.ok, false);
+  assert.equal(opened.response.result.message, '10문항 중 2문항을 넣었습니다. 2번은 직접 고르세요.');
+
+  // 응시 중인 시험이 없으면 응시를 시작하지 않는다. 읽지 못한 답은 사이트에 묻기 전에 돌려보낸다.
+  const none = await run({ plan: { ok: false, needsStart: true, message: '한 번 더 누르면 응시 시작' } });
+  assert.match(none.response.result.message, /시험 바로가기로 먼저 응시하세요/);
+  assert.equal(none.injected.length + none.created.length, 0);
+  const unreadable = await run({ text: '모르겠음' });
+  assert.equal(unreadable.response.ok, false);
+  assert.match(unreadable.response.error, /답을 읽지 못했습니다/);
+  assert.ok(!unreadable.calls.some(call => call.name === 'exam.prepareOpen' || call.name === 'auth.ensureLoggedIn'));
 });
