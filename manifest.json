@@ -12,7 +12,7 @@
     "128": "icons/icon128.png"
   },
   "permissions": ["storage", "notifications", "offscreen", "alarms", "declarativeNetRequestWithHostAccess", "sidePanel", "cookies", "downloads", "scripting", "nativeMessaging", "clipboardWrite"],
-  "host_permissions": ["https://*.ubob.com/*", "https://*.runningplus.net/*", "https://alpha-campus.kr/*", "https://report.alpha-campus.kr/*", "https://make.alpha-campus.kr/*"],
+  "host_permissions": ["https://*.ubob.com/*", "https://*.runningplus.net/*", "https://alpha-campus.kr/*", "https://report.alpha-campus.kr/*", "https://make.alpha-campus.kr/*", "https://hrd.krs.co.kr/*", "https://eclass.krs.co.kr/*"],
   "side_panel": {
     "default_path": "popup/popup.html?surface=sidepanel"
   },

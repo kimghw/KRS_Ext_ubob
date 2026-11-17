@@ -64,6 +64,23 @@
     </form>
   </section>
 
+  <!-- e-Hrd 올해 학점 (My Credits) — 값은 "취득 / 최소". 값을 누르면 My Credits, 오른쪽은 최소이수학점 화면 바로가기 -->
+  <section class="card credits-card">
+    <div class="row">
+      <div class="label" id="hrdLabel">학점</div>
+      <div class="links">
+        <button type="button" id="hrdBtnMinimum" class="link" title="e-Hrd 최소이수학점 조정(면제) 기준을 탭으로 엽니다">최소이수학점 확인</button>
+        <button type="button" id="hrdBtnRefresh" class="link">새로고침</button>
+      </div>
+    </div>
+    <div id="hrdCredits" class="credits" hidden></div>
+    <p class="empty" id="hrdEmpty">불러오는 중…</p>
+    <div class="msg warn credits-error" id="hrdErrorBox" role="status" hidden>
+      <span id="hrdError"></span>
+      <button type="button" id="hrdBtnEclass" class="link" hidden>e-Class 로그인</button>
+    </div>
+  </section>
+
   <!-- 백그라운드 자동 학습 -->
   <section class="card">
     <div class="state"><span class="dot" id="dot"></span><span id="phaseText">…</span></div>

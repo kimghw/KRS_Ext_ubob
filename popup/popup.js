@@ -23,6 +23,10 @@ let rpListLoading = false;
 let rpListResult = null;    // { ok, text }
 let rpAutoTried = false;
 const RP_STALE_MS = 5 * 60 * 1000;   // 플러스 탭을 열 때 이보다 오래된 목록은 자동으로 새로고침
+let hrd = null;             // { credits, error, checkedAt } — e-Hrd 올해 학점
+let hrdLoading = false;
+let hrdAutoTried = false;
+const HRD_STALE_MS = 30 * 60 * 1000;   // 유밥 탭을 열 때 이보다 오래된 학점은 자동으로 다시 읽는다
 
 const COURSE_STATUS = {
   pending: '대기', playing: '학습 중', done: '완료', passed: '수료', closed: '기간 종료',
@@ -48,7 +52,7 @@ const ago = (t) => {
 async function load() {
   const [s, l, ss] = await Promise.all([
     chrome.storage.sync.get(DEFAULTS),
-    chrome.storage.local.get({ runner: null, runnerLog: [], account: null, excluded: [], auth: null, rpAccount: null, rpAuth: null, rpList: null, popupTab: 'main' }),
+    chrome.storage.local.get({ runner: null, runnerLog: [], account: null, excluded: [], auth: null, rpAccount: null, rpAuth: null, rpList: null, hrdCredits: null, popupTab: 'main' }),
     chrome.storage.session.get({ runnerStatus: null })
   ]);
   settings = s;
@@ -60,6 +64,7 @@ async function load() {
   rpAccount = l.rpAccount;
   rpAuth = l.rpAuth;
   rpList = l.rpList;
+  hrd = l.hrdCredits;
   if (!tabChosen) tab = ['plus', 'alpha'].includes(l.popupTab) ? l.popupTab : 'main';
   status = ss.runnerStatus;
   render();
@@ -77,6 +82,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (changes.rpAccount) rpAccount = v('rpAccount');
     if (changes.rpAuth) rpAuth = v('rpAuth');
     if (changes.rpList) rpList = v('rpList');
+    if (changes.hrdCredits) hrd = v('hrdCredits');
   }
   if (area === 'session' && changes.runnerStatus) status = v('runnerStatus');
   render();
@@ -360,6 +366,7 @@ for (const b of document.querySelectorAll('.tabs button')) {
     chrome.storage.local.set({ popupTab: tab });   // 다음에 열 때도 같은 탭
     renderTabs();
     if (tab === 'plus') rpAutoRefresh();
+    if (tab === 'main') hrdAutoRefresh();
   });
   b.addEventListener('keydown', (event) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -585,6 +592,68 @@ $('rpBtnDiagCopy').addEventListener('click', async () => {
   }
 });
 
+// ---------- e-Hrd 학점 ----------
+const HRD_KINDS = [['cc', 'C-C', '역량필수'], ['ce', 'C-E', '역량선택'], ['sc', 'S-C', '']];
+const fmtCredit = (n) => String(+Number(n).toFixed(2));
+
+function renderHrd() {
+  const c = hrd && hrd.credits;
+  const err = hrd && hrd.error;
+  $('hrdLabel').textContent = c ? `${c.year} 학점` : '학점';
+  const cells = !c ? [] : HRD_KINDS.filter(([k]) => c[k]).map(([k, name, ko]) => {
+    const { got, need } = c[k];
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = got >= need ? 'met' : 'short';
+    b.title = `${ko ? `${ko} · ` : ''}취득 ${fmtCredit(got)} / 최소 ${fmtCredit(need)}${hrd.checkedAt && !err ? ` (${fmtClock(hrd.checkedAt)} 확인)` : ''}
+(누르면 e-Hrd My Credits를 엽니다)`;
+    const label = document.createElement('span');
+    label.className = 'k';
+    label.textContent = name;
+    const value = document.createElement('span');
+    value.className = 'v';
+    value.textContent = `${fmtCredit(got)} / ${fmtCredit(need)}`;
+    b.append(label, value);
+    b.addEventListener('click', () => act('hrd-open'));
+    return b;
+  });
+  const box = $('hrdCredits');
+  box.replaceChildren(...cells);
+  box.hidden = !cells.length;
+  box.classList.toggle('stale', !!err);   // 이번에 읽지 못해 지난 값을 보여 주는 중
+  $('hrdEmpty').hidden = cells.length > 0 || !!err;
+  $('hrdEmpty').textContent = hrdLoading || !hrd ? '불러오는 중…' : '학점 정보가 없습니다.';
+  $('hrdErrorBox').hidden = !err;
+  const needEclass = !!err && err.code === 'ECLASS';   // 옆에 "e-Class 로그인" 바로가기가 붙는다
+  if (err) $('hrdError').textContent = needEclass ? '로그인이 필요합니다' : err.message;
+  $('hrdBtnEclass').hidden = !needEclass;
+  $('hrdBtnRefresh').disabled = hrdLoading;
+  $('hrdBtnRefresh').textContent = hrdLoading ? '확인 중…' : '새로고침';
+}
+
+async function hrdRefresh() {
+  if (hrdLoading) return;
+  hrdLoading = true;
+  render();
+  const res = await act('hrd-credits');
+  hrdLoading = false;
+  if (res && res.ok && res.result) hrd = res.result;
+  else hrd = { credits: hrd && hrd.credits, error: { code: 'ERROR', message: (res && res.error) || '학점을 읽지 못했습니다' }, checkedAt: Date.now() };
+  render();
+}
+
+// 유밥 탭을 열면 학점이 없거나 오래됐을 때 한 번 자동으로 읽는다
+function hrdAutoRefresh() {
+  if (hrdAutoTried || hrdLoading) return;
+  if (hrd && Date.now() - hrd.checkedAt < HRD_STALE_MS) return;
+  hrdAutoTried = true;
+  hrdRefresh();
+}
+
+$('hrdBtnRefresh').addEventListener('click', hrdRefresh);
+$('hrdBtnMinimum').addEventListener('click', () => act('hrd-minimum'));
+$('hrdBtnEclass').addEventListener('click', () => act('hrd-eclass'));
+
 // ---------- 설정 ----------
 const CHECKS = ['runnerMuted', 'notify', 'enabled', 'workHoursOnly', 'workWeekdaysOnly', 'restBetween'];
 for (const k of CHECKS) $(k).addEventListener('change', (e) => chrome.storage.sync.set({ [k]: e.target.checked }));
@@ -624,6 +693,7 @@ function render() {
   renderAccount();
   renderRpAccount();
   renderRpCourses();
+  renderHrd();
   renderSettings();
   renderLog();
 }
@@ -683,7 +753,7 @@ $('btnList').addEventListener('click', async () => {
   render();
 });
 
-load().then(() => { if (tab === 'plus') rpAutoRefresh(); });
+load().then(() => { if (tab === 'plus') rpAutoRefresh(); if (tab === 'main') hrdAutoRefresh(); });
 
 // 머리의 GitHub 아이콘 — 새 버전 확인 · 받기 · 다시 불러오기 (gitsync.js)
 UbobGitSync.create({ button: $('gitSync'), badge: $('gitCount'), notice: $('gitNotice') }).start();

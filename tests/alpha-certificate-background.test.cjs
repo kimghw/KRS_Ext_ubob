@@ -92,7 +92,8 @@ function fixture({ authGate, listGate, initial = {}, inspect, capture, prepareOp
     AlphaExam: { openInPage: examInPage, answerInPage: examAnswerInPage, parseAnswers: require('../src/alpha-exam.js').parseAnswers, createClient: () => ({
       capture: async (...args) => { calls.push({ name: 'exam.capture', args }); return capture(...args); },
       prepareOpen: async (...args) => { calls.push({ name: 'exam.prepareOpen', args }); return prepareOpen(...args); } }) },
-    AlphaRunner: { ALARM: 'alpha-test-alarm', create: () => runner }
+    AlphaRunner: { ALARM: 'alpha-test-alarm', create: () => runner },
+    HrdCredits: { createClient: () => ({}) }
   };
   let context;
   const realImports = new Set(['shared.js', 'alpha-catalog.js', 'alpha-certificate-batch.js']);

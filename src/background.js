@@ -1,6 +1,7 @@
 importScripts('shared.js', 'alpha-catalog.js', 'alpha-api.js', 'alpha-auth.js', 'alpha-service.js',
   'alpha-learning.js', 'alpha-certificate-api.js', 'alpha-certificates.js', 'alpha-certificate-list.js',
-  'alpha-certificate-batch.js', 'alpha-host.js', 'alpha-runner.js', 'alpha-survey-indicator.js', 'alpha-survey.js', 'alpha-exam.js');
+  'alpha-certificate-batch.js', 'alpha-host.js', 'alpha-runner.js', 'alpha-survey-indicator.js', 'alpha-survey.js', 'alpha-exam.js',
+  'hrd-credits.js');
 
 const alphaSurveyIndicator = AlphaSurveyIndicator.create({ action: chrome.action, runtime: chrome.runtime });
 let surveyIconRefresh = 0;
@@ -1162,6 +1163,44 @@ async function openSitePage(path) {
 }
 
 // =====================================================================
+// e-Hrd (hrd.krs.co.kr) — 올해 학점(My Credits)과 사이트 화면 바로가기
+// =====================================================================
+// 계정을 저장하지 않는다. 브라우저의 e-Class 로그인으로 통합 로그인한다 (hrd-credits.js).
+const hrdClient = HrdCredits.createClient();
+let hrdJob = null;
+
+// 결과는 hrdCredits 에 { credits, error, checkedAt } 로 남긴다. 실패해도 같은 해의 마지막 값은 지우지 않는다.
+function refreshHrdCredits() {
+  if (hrdJob) return hrdJob;
+  hrdJob = (async () => {
+    const year = new Date().getFullYear();
+    let state;
+    try {
+      state = { credits: await hrdClient.credits(year), error: null, checkedAt: Date.now() };
+    } catch (e) {
+      const { hrdCredits: saved } = await chrome.storage.local.get('hrdCredits');
+      const last = saved && saved.credits && saved.credits.year === String(year) ? saved.credits : null;
+      state = { credits: last, error: { code: (e && e.code) || 'ERROR', message: errMsg(e) }, checkedAt: Date.now() };
+    }
+    await chrome.storage.local.set({ hrdCredits: state });
+    return state;
+  })().finally(() => { hrdJob = null; });
+  return hrdJob;
+}
+
+// e-Hrd 화면을 탭으로 연다 (이미 열려 있으면 그 탭으로 이동). 로그인이 끊겨 있으면 먼저 통합 로그인을 해 둔다.
+async function openHrdPage(url) {
+  try { await hrdClient.ensureLoggedIn(); } catch { /* 실패하면 사이트가 e-Class 로그인 화면으로 보낸다 */ }
+  const [existing] = await chrome.tabs.query({ url: `${url}*` });
+  if (existing) {
+    await chrome.tabs.update(existing.id, { active: true });
+    await chrome.windows.update(existing.windowId, { focused: true });
+  } else {
+    await openBesideActiveTab(url);
+  }
+}
+
+// =====================================================================
 // 러닝플러스 (runningplus.net) — 저장한 계정으로 자동 로그인
 // =====================================================================
 // 유밥과 달리 API 가 없다. 로그인 페이지의 폼(#MemberForm)과 같은 요청을 보내고, 결과는 나의 학습실 페이지로 확인한다.
@@ -1596,6 +1635,10 @@ const POPUP_ACTIONS = {
   'rp-open': () => rpOpen(),
   'rp-list': () => rpRefreshList(),
   'rp-diagnose': () => rpDiagnose(),
+  'hrd-credits': () => refreshHrdCredits(),
+  'hrd-open': () => openHrdPage(HrdCredits.PAGE_URL),
+  'hrd-minimum': () => openHrdPage(HrdCredits.MINIMUM_URL),
+  'hrd-eclass': async () => { await openBesideActiveTab(HrdCredits.ECLASS_LOGIN_URL); },
   'alpha-check': (msg) => alphaManual(async () => { await alphaAuth.ensureLoggedIn(); return alpha.check(msg); }),
   'alpha-enroll': (msg) => alphaManual(async () => { await alphaAuth.ensureLoggedIn(); return alpha.enroll(msg); }),
   'alpha-open': (msg) => alpha.open(msg),
